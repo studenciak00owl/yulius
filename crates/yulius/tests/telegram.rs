@@ -695,8 +695,16 @@ async fn a_summary_never_reaches_a_chat_unlinked_meanwhile() -> TestResult {
             ask(&w, &task, "blocked").await?;
         }
     }
-    w.fake.wait_sent(100, 1 + 5).await?;
-    w.fake.wait_sent(300, 1 + 5).await?;
+    // Bob alone sees `s3`: his notice is handled after all fourteen above, so the clock moves on
+    // only once each person's bound holds its two.
+    seed_sandbox(&w.h, "s3", "third", &alice).await?;
+    w.h.github.set_perm("bob", "acme/third", perms("read"));
+    link(&w, &w.bob, 200).await?;
+    seed_task(&w.h, "b1", "s3", &alice, TaskStatus::Running, None).await?;
+    ask(&w, "b1", "barrier").await?;
+    w.fake.wait_sent(200, 2).await?;
+    assert_eq!(w.fake.sent_to(100).len(), 1 + 5);
+    assert_eq!(w.fake.sent_to(300).len(), 1 + 5);
     w.fake.message(100, true, "/stop");
     let sent = w.fake.wait_sent(100, 1 + 5 + 1).await?;
     assert!(sent[6].starts_with("Unlinked"), "{sent:?}");
