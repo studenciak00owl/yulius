@@ -39,6 +39,9 @@ RUST_TEST_THREADS = "{cpus}"
 [[ci.jobs]]
 name = "quality"
 command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
+# A cold run on a 2-CPU budget needs about 50 minutes (check 10, macOS 11, test build and run 25);
+# the instance's 30-minute default killed the first runs of this sandbox (2026-11-07).
+timeout_minutes = 90
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and
@@ -46,6 +49,8 @@ command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
 [[ci.jobs]]
 name = "e2e"
 command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
+# 867 browser tests: about 25 minutes alone, over an hour while another job compiles.
+timeout_minutes = 120
 
 # The Vidoc security scan on vidoc-1 (SPEC-195, ADR-0157) of pull request heads: the files the pull
 # request changed against dev, read from its commits. Findings (exit 1) fail the job, without

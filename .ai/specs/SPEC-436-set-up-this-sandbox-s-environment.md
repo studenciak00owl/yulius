@@ -31,6 +31,8 @@ without breaking each other's rustup toolchain.
 - BSL-001: the rustup installer and `rustup toolchain install` run under one exclusive lock in the
   home (`$YULIUS_TOOLS_CACHE` or `~/.cache/yulius-tools`), so a second run waits and then finds the
   toolchain installed.
+- BSL-003: `quality` (90 min) and `e2e` (120 min) set `timeout_minutes` in `yulius.toml`: the first
+  CI runs of PR #1 timed out at the instance's 30-minute default on a cold cache.
 - BSL-002: the lock is a small module, `scripts/home_lock.py`, with a regression test.
 
 ## Plan
