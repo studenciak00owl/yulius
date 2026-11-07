@@ -125,7 +125,7 @@ any inbound port.
 - [x] Long polling with backoff against a fake Telegram, stopped when the token goes
 - [x] Link codes, /start and /stop binding, unlink from Settings, audited
 - [x] Notifications classified, filtered by the event stream's rule, redacted and rate bound
-- [ ] Settings rows for the bot and for linking, with mock routes and an e2e test
+- [x] Settings rows for the bot and for linking, with mock routes and an e2e test
 - [ ] Docs, changes, gates green and an independent review in a fresh session
 
 ## Acceptance criteria
