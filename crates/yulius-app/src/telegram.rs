@@ -346,8 +346,21 @@ impl App {
                     .await?;
                 "Unlinked: this chat gets no more Yulius notifications.".to_owned()
             }
-            ChatCommand::Start(Some(_)) => BAD_CODE_REPLY.to_owned(),
-            ChatCommand::Start(None) | ChatCommand::Other => LINKED_HELP.to_owned(),
+            // Anything else gets its answer at most every 10 minutes, so no chat fills the
+            // shared send queue (review round 1).
+            ChatCommand::Start(_) | ChatCommand::Other => {
+                if !self
+                    .channel_services()?
+                    .quiet_reply_due(&message.chat, now.0)
+                {
+                    return Ok(());
+                }
+                if matches!(command, ChatCommand::Start(Some(_))) {
+                    BAD_CODE_REPLY.to_owned()
+                } else {
+                    LINKED_HELP.to_owned()
+                }
+            }
         };
         self.enqueue(message.chat.clone(), reply);
         Ok(())
@@ -481,6 +494,8 @@ impl App {
         let unlinked = if earlier.is_some_and(|e| e.identity.id == identity.id) {
             0
         } else {
+            // The earlier bot's poll ends first, so no `/start` it handles links a chat after.
+            self.activate(None);
             self.deps.store.clear_chat_links().await?
         };
         self.deps
@@ -517,10 +532,14 @@ impl App {
         let services = self.channel_services()?;
         let now = self.now();
         let switching = services.switching.lock().await;
+        let had = self.deps.store.chat_bot().await?.is_some();
         self.activate(None);
         self.deps.store.set_chat_bot(None, now).await?;
         let unlinked = self.deps.store.clear_chat_links().await?;
         drop(switching);
+        if !had {
+            return self.telegram_bot_view(ctx).await;
+        }
         let login = self.login_of(&ctx.user.id).await;
         self.deps
             .store

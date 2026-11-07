@@ -34,6 +34,7 @@ export function telegramBotCard(ctx) {
     const who = state.set_by ? ` by ${state.set_by}` : '';
     const when = state.set_at ? ` ${relLong(state.set_at)}` : '';
     const linked = `${state.linked} ${state.linked === 1 ? 'person' : 'people'} linked`;
+    if (state.state === 'off') return `@${state.bot_username} is saved but not running: save its token again.`;
     if (state.state === 'retrying') return `@${state.bot_username} cannot reach Telegram (${state.last_error || 'error'}); retrying. Set${who}${when}, ${linked}.`;
     return `@${state.bot_username} is receiving. Set${who}${when}, ${linked}.`;
   }
@@ -64,7 +65,7 @@ export function telegramBotCard(ctx) {
     const remove = state.configured
       ? h('button', { type: 'button', class: 'btn btn-sm btn-danger', onClick: () => removeBot() }, 'Remove')
       : null;
-    const on = state.configured && state.state !== 'retrying';
+    const on = state.configured && state.state === 'polling';
     setChildren(body,
       h('p', { class: 'text-2' }, 'One bot serves the whole instance. Each person links their own chat in Settings → Notifications and chooses what reaches it. The server asks Telegram for messages, so no inbound port or public URL is needed. Create a bot with @BotFather and paste its token here.'),
       h('div', { class: ['jev-status', on ? 'jev-on' : 'jev-off'] }, icon(on ? 'check' : 'key', { size: 14 }), h('span', { role: 'status' }, statusText())),

@@ -481,6 +481,17 @@ async fn an_unlinked_chat_gets_one_fixed_reply() -> TestResult {
     w.h.clock.0.fetch_add(10 * MINUTE_MS, Ordering::SeqCst);
     w.fake.message(777, true, "again");
     assert_eq!(w.fake.wait_sent(777, 2).await?.len(), 2);
+    // A linked chat's help is bounded the same way, so no chat fills the send queue.
+    for text in ["hi", "hello", "/start"] {
+        w.fake.message(300, true, text);
+    }
+    w.fake.message(777, true, "a third time");
+    w.h.clock.0.fetch_add(10 * MINUTE_MS, Ordering::SeqCst);
+    w.fake.message(777, true, "and a fourth");
+    w.fake.wait_sent(777, 3).await?;
+    let carol = w.fake.sent_to(300);
+    assert_eq!(carol.len(), 2, "{carol:?}");
+    assert!(carol[1].starts_with("This chat gets your Yulius notifications"), "{carol:?}");
     Ok(())
 }
 
@@ -662,5 +673,133 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
     w.h.app.publish_task(&id).await;
     barrier(&w, "c1").await?;
     assert_eq!(w.fake.sent_to(100).len(), 1, "only the link's reply");
+    Ok(())
+}
+
+/// Review round 1: a summary held for a chat is never sent after that chat was unlinked (TGC-013).
+#[tokio::test]
+async fn a_summary_never_reaches_a_chat_unlinked_meanwhile() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    let alice = user_id(&w, "alice").await?;
+    let carol = user_id(&w, "carol").await?;
+    for n in 1..=7 {
+        for (who, sandbox, prefix) in [(&alice, "s1", "a"), (&carol, "s2", "c")] {
+            let task = format!("{prefix}{n}");
+            seed_task(&w.h, &task, sandbox, who, TaskStatus::Running, None).await?;
+            ask(&w, &task, "blocked").await?;
+        }
+    }
+    w.fake.wait_sent(100, 1 + 5).await?;
+    w.fake.wait_sent(300, 1 + 5).await?;
+    w.fake.message(100, true, "/stop");
+    let sent = w.fake.wait_sent(100, 1 + 5 + 1).await?;
+    assert!(sent[6].starts_with("Unlinked"), "{sent:?}");
+    // The minute ends: carol's summary goes, then a new notice of hers, sent after any summary.
+    w.h.clock.0.fetch_add(MINUTE_MS, Ordering::SeqCst);
+    let sent = w.fake.wait_sent(300, 1 + 5 + 1).await?;
+    assert!(sent[6].starts_with("2 more notifications"), "{sent:?}");
+    barrier(&w, "after").await?;
+    let alice_chat = w.fake.sent_to(100);
+    assert_eq!(
+        alice_chat.len(),
+        7,
+        "no summary after /stop: {alice_chat:?}"
+    );
+    Ok(())
+}
+
+/// Review round 1: subscription problems reach instance administrators who chose them, redacted;
+/// a disabled person gets nothing; a chat taken by another person is audited for the first.
+#[tokio::test]
+async fn subscription_problems_reach_administrators_and_disabled_people_get_nothing() -> TestResult
+{
+    use yulius_contracts::api::admin::{AccountUsageView, AccountView};
+    use yulius_contracts::events::UiEvent;
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.bob, 200).await?;
+    link(&w, &w.carol, 300).await?;
+    let all = json!({"needs_you": true, "done": false, "failed": false, "account": true});
+    api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/choices",
+        Some(all),
+        &w.alice,
+    )
+    .await?;
+    // Bob is no administrator: even a stored choice gives him no subscription notices.
+    let bob = w.h.store.user_by_login("bob").await?.ok_or("bob")?.id;
+    let wants_all = yulius_domain::notify::NotifyChoices {
+        needs_you: true,
+        done: true,
+        failed: true,
+        account: true,
+    };
+    assert!(w.h.store.set_chat_choices(&bob, &wants_all).await?);
+    let secret = concat!("ghp_", "Zx9Telegram0Account1Fixture2Body3456");
+    w.h.app.events.publish(
+        None,
+        true,
+        UiEvent::AccountUpdated {
+            account: AccountView {
+                id: "acc1".into(),
+                provider: "anthropic".into(),
+                label: "Team Max".into(),
+                status: "relogin".into(),
+                usage: AccountUsageView::default(),
+                last_error: Some(format!("token {secret} expired")),
+                email: None,
+                in_use_by: 0,
+                tokens_24h: None,
+                tokens_7d: None,
+            },
+        },
+    );
+    let sent = w.fake.wait_sent(100, 2).await?;
+    assert!(
+        sent[1].starts_with("Team Max needs to sign in again\n"),
+        "{sent:?}"
+    );
+    assert!(
+        sent[1].ends_with("https://yulius.test/admin/accounts"),
+        "{sent:?}"
+    );
+    assert!(
+        !sent[1].contains("Zx9Telegram0Account"),
+        "redacted: {sent:?}"
+    );
+
+    // Carol is disabled: her sandbox's news no longer reaches her.
+    let carol = w.h.store.user_by_login("carol").await?.ok_or("carol")?.id;
+    w.h.store
+        .update_user_flags(&carol, Some(Some(w.h.app.now())), None)
+        .await?;
+    seed_task(&w.h, "c1", "s2", carol.as_str(), TaskStatus::Running, None).await?;
+    ask(&w, "c1", "blocked").await?;
+    // Alice's own task is handled after carol's: her message proves carol's was decided.
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "a1", "s1", &alice, TaskStatus::Running, None).await?;
+    ask(&w, "a1", "blocked").await?;
+    w.fake.wait_sent(100, 3).await?;
+    assert_eq!(w.fake.sent_to(300).len(), 1, "only the link's reply");
+    assert_eq!(w.fake.sent_to(200).len(), 1, "bob: nothing");
+
+    // Bob links alice's chat: alice is unlinked, audited as relinked.
+    link(&w, &w.bob, 100).await?;
+    assert!(
+        w.h.store
+            .chat_link(&yulius_domain::ids::UserId::parse(&alice)?)
+            .await?
+            .is_none()
+    );
+    assert_eq!(
+        audits(&w, &alice, "telegram.unlinked").await?,
+        vec!["relinked"]
+    );
     Ok(())
 }
