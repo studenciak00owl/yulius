@@ -45,6 +45,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `yulius` binary of the base it started on, so after the update its bridges did not ping, and the
   watch read them as dropped. Now it reconnects only a session whose MCP is known to be gone: its
   bridge pinged and stopped, or a run this server spawned never connected.
+- Notifications reach a person's own Telegram chat (SPEC-437, ADR-0280, part 1 of upstream #1107).
+  An instance administrator sets one bot in Settings → Administration (checked with `getMe`, sealed,
+  removable, which stops polling and unlinks every chat). Each person links their private chat with
+  a single-use 10-minute code from a browser session (`t.me/<bot>?start=<code>`), unlinks in
+  Settings or with `/stop` (audited `telegram.linked` / `telegram.unlinked`), and chooses Needs you
+  (default), Done, failed or stopped, and (administrators) subscription problems. Only events their
+  event stream carries are sent, with the task's link, redacted like transcripts, at most five a
+  minute with the rest folded into one summary. The server long-polls Telegram (no inbound port,
+  backoff after errors; `YULIUS_TELEGRAM_API_URL` for a fake in tests), behind a
+  `NotificationChannel` port that part 2 (replies and new tasks) extends.
+- Bootstrap tolerates a concurrent run in the shared CI home (SPEC-436, task #1). The two CI lanes of
+  a sandbox no longer race `rustup toolchain install` in `~/.rustup` (run `ee7c4491` failed on a
+  half-installed toolchain): `scripts/bootstrap.py` takes a lock in the home around it. The sandbox
+  also got the browser system libraries the e2e job needs.
 
 ## 2026-11-06
 
