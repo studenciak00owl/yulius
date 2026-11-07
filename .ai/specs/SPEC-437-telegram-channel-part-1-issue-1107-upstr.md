@@ -65,8 +65,9 @@ any inbound port.
 
 ### Personal linking
 
-- TGC-010: Settings → Notifications shows a "Telegram" row to every signed-in person once a bot is
-  configured: Link Telegram, or the linked state with Unlink and the event choices.
+- TGC-010: Settings → Notifications shows a "Telegram" row to every signed-in person: Link
+  Telegram once a bot is configured (before that, who can add one), or the linked state with
+  Unlink and the event choices.
 - TGC-011: Link Telegram (`POST /api/me/telegram/link`) answers a single-use code valid for
   10 minutes and the link `https://t.me/<bot>?start=<code>`. Only a browser session may ask for
   it: an API token (CLI, remote MCP, agent) is refused. A new code replaces the person's previous
@@ -78,7 +79,8 @@ any inbound port.
 - TGC-013: unlink from Settings (`DELETE /api/me/telegram`) or by sending `/stop` in the linked
   chat. Audited `telegram.unlinked` with where it came from (`settings`, `telegram`).
 - TGC-014: a chat that is not linked gets one fixed reply (how to link) and nothing else: nothing
-  is created or changed. It gets that reply at most once per 10 minutes (bounded memory).
+  is created or changed. It gets that reply at most once per 10 minutes (bounded memory). A
+  linked chat's help reply to anything but `/stop` is bounded the same way.
 
 ### Notifications
 
@@ -99,7 +101,8 @@ any inbound port.
   credential shapes. Plain text only (no Telegram markup), at most 4000 characters.
 - TGC-024: at most 5 messages per person per minute. Notifications beyond that in the same
   minute are folded into one summary sent when the minute ends ("3 more notifications: …", at
-  most 20 lines kept, then a count). Sending is a bounded queue; a full queue drops with a log.
+  most 20 lines kept, then a count), only to the chat still linked to that person while they are
+  enabled. Sending is a bounded queue; a full queue drops with a log.
 
 ### Channel interface
 
@@ -117,6 +120,17 @@ any inbound port.
 - TGC-103 (later): `/status` lists the person's tasks that need them; `/task <sandbox> <text>`
   targets another sandbox.
 - TGC-104 (later): CI failing on the person's pull request as an event choice.
+
+### Known limits (accepted for part 1)
+
+- The notifier follows the bus like an event stream but cannot resync: if it falls more than 1024
+  events behind, the missed notices are logged and lost. It skips all work while nobody is linked.
+- The poll's update offset lives in memory: after a restart or a new bot, the last batch Telegram
+  had not yet confirmed is handled again (a `/stop` answered twice, a used code called invalid).
+- Telegram's 429 answer is not retried with its `retry_after`; the message is dropped with a log.
+- `WS /api/events` now decides "playground guest" again at each re-check from the refreshed person
+  instead of once at connect (the shared `App::envelope_reaches`); the result is the same for
+  every existing account.
 
 ## Plan
 

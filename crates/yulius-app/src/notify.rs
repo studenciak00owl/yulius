@@ -86,7 +86,7 @@ impl App {
                         }
                         Err(RecvError::Closed) => break,
                     },
-                    _ = flush.tick() => app.flush_notices(),
+                    _ = flush.tick() => app.flush_notices().await,
                 }
             }
         });
@@ -97,6 +97,16 @@ impl App {
             return;
         };
         if services.active().is_none() {
+            return;
+        }
+        // Nobody linked: nothing to read or remember (keeps the notifier ahead of the bus).
+        if self
+            .deps
+            .store
+            .chat_links()
+            .await
+            .map_or(true, |links| links.is_empty())
+        {
             return;
         }
         let notice = match &envelope.event {
@@ -262,8 +272,10 @@ impl App {
         Ok(())
     }
 
-    /// Sends each person's summary of what their bound held, once their window ended.
-    fn flush_notices(&self) {
+    /// Sends each person's summary of what their bound held, once their window ended, only to the
+    /// chat still linked to them while they are enabled: an unlinked, relinked or disabled
+    /// person's held notices are dropped (review round 1).
+    async fn flush_notices(&self) {
         let Ok(services) = self.channel_services() else {
             return;
         };
@@ -271,15 +283,30 @@ impl App {
         let link = self.config.public_url.trim_end_matches('/').to_owned();
         let mut due = Vec::new();
         if let Ok(mut all) = services.notifier.throttles.lock() {
-            for (chat, throttle) in all.values_mut() {
+            for (user, (chat, throttle)) in all.iter_mut() {
                 if let Some(summary) = throttle.flush(now, &link) {
-                    due.push((chat.clone(), summary));
+                    due.push((user.clone(), chat.clone(), summary));
                 }
             }
             all.retain(|_, (_, throttle)| !throttle.idle(now));
         }
-        for (chat, summary) in due {
-            self.enqueue(chat, summary);
+        let store = &self.deps.store;
+        for (user, chat, summary) in due {
+            let linked = store
+                .chat_link(&user)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|l| l.chat == chat);
+            let enabled = store
+                .user(&user)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|u| u.disabled_at.is_none());
+            if linked && enabled {
+                self.enqueue(chat, summary);
+            }
         }
     }
 }
