@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-07
+
+- Bootstrap tolerates a concurrent run in the shared CI home (SPEC-436, task #1). The two CI lanes of
+  a sandbox no longer race `rustup toolchain install` in `~/.rustup` (run `ee7c4491` failed on a
+  half-installed toolchain): `scripts/bootstrap.py` takes a lock in the home around it. The sandbox
+  also got the browser system libraries the e2e job needs.
+
 ## 2026-11-06
 
 - Every tab strip of the tool panel moves like the sandbox tabs (SPEC-434, ADR-0278, task #416).
