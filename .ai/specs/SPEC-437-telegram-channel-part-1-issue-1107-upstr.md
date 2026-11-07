@@ -1,11 +1,11 @@
 ---
 yulius-task: 7c918f4c-5e63-4317-b00e-274ed0147e65
-status: in-progress
+status: done
 ---
 
 # SPEC-437: A personal Telegram channel for notifications (part 1 of #1107)
 
-Status: in-progress
+Status: done
 Date: 2026-11-07
 Owner: Yulius task #2 (fork studenciak00owl/yulius, proposed upstream to Quartio-Studio/yulius `dev`)
 Scope authorization: upstream issue Quartio-Studio/yulius#1107 ("Personal Telegram channel"),
@@ -140,7 +140,7 @@ any inbound port.
 - [x] Link codes, /start and /stop binding, unlink from Settings, audited
 - [x] Notifications classified, filtered by the event stream's rule, redacted and rate bound
 - [x] Settings rows for the bot and for linking, with mock routes and an e2e test
-- [ ] Docs, changes, gates green and an independent review in a fresh session
+- [x] Docs, changes, gates green and an independent review in a fresh session
 
 ## Acceptance criteria
 
@@ -187,4 +187,46 @@ any inbound port.
 
 ## Evidence
 
-Pending.
+All commands were run in this worktree on 2026-11-07.
+
+- `scripts/dev ci` at `019944a3`: exit 0. Repository check, script unit tests, `cargo check`,
+  `fmt --check`, `clippy -D warnings` (Linux and macOS targets), `nextest`: 3228 tests passed,
+  16 skipped, then deps and the rest of the gate. An earlier run at `1fcd1fc3` failed one test,
+  `telegram::a_summary_never_reaches_a_chat_unlinked_meanwhile`. Under load, the test moved the
+  clock before the notifier had read all its events. The test now waits on a notice to a third
+  person before it moves the clock (`019944a3`). All 9 Telegram tests then passed 8 stress
+  iterations (`--stress-count 8`) with every CPU busy.
+- Unit tests: `yulius-domain` `notify::tests` (11: classification, signatures, message text and
+  links, truncation, the rate bound and its summary, chat commands, code shape). `yulius-store`
+  `telegram::tests` (3: the bot round trip, single-use and expiring codes, one chat per person and
+  one person per chat). `yulius` `wiring::telegram::tests` (5: HTTPS except loopback, token shape,
+  getMe/sendMessage/getUpdates against a local fake, a refused token and an unreachable API typed
+  without the token, malformed updates). `yulius-app` `telegram::tests` (code alphabet).
+- Integration, `crates/yulius/tests/telegram.rs` (9, against a fake Bot API on 127.0.0.1; the
+  real Telegram is never called):
+  - TGC-001/002: an administrator sets and removes the bot, and another bot unlinks every chat.
+  - TGC-011..013: a single-use code links a chat, and both ways of unlinking are audited.
+  - TGC-014: an unlinked chat gets one fixed reply, and a linked chat's help is bounded the same
+    way.
+  - TGC-020..023: Needs you reaches only the people who can view the task, redacted (a known
+    agent secret value never arrives), and the Done and failure choices work.
+  - TGC-024: a burst is folded into one summary, and no summary reaches a chat unlinked meanwhile.
+  - TGC-003: polling retries after errors and recovers.
+  - A state entered before the start is not told again.
+  - Subscription notices reach administrators only, redacted. A disabled person gets nothing.
+    A relinked chat is audited.
+- e2e `tests/telegram.e2e.ts` (4: the bot card, a member without it, link, choices and unlink,
+  the administrator's subscription choice; no WCAG violations): passed. In the full suite
+  (`npx e2e run`, 871 tests, 106 min), 868 passed, 1 was skipped and 2 failed in files this change
+  does not touch: `navigation.e2e.ts` ("sidebar rows show the task number…", a 118 s action
+  timeout) and `secrets.e2e.ts` ("a failed copy shows no check…", a title not yet updated). Both
+  files passed when run again (39/39). They are timing races in tests that already existed. Filing
+  them as an issue failed: GitHub answered HTTP 410 (issues are off on this fork). They are listed
+  for the upstream pull request instead.
+- `scripts/dev security`: **not run** (exit 2: this instance has no Vidoc key). It neither passed
+  nor failed. Upstream CI's `security` job scans the pull request with its own key.
+- Independent review in a fresh session (skill `om-code-review`), two rounds:
+  - Round 1: one major finding, a held summary sent to an unlinked or relinked chat. It was fixed
+    test-first. The minor findings were fixed or recorded under Known limits.
+  - Round 2: APPROVE at `7fe3c75e`, with one minor finding: every bus event read the links. That
+    was fixed in `1fcd1fc3`.
