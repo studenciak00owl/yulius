@@ -491,7 +491,10 @@ async fn an_unlinked_chat_gets_one_fixed_reply() -> TestResult {
     w.fake.wait_sent(777, 3).await?;
     let carol = w.fake.sent_to(300);
     assert_eq!(carol.len(), 2, "{carol:?}");
-    assert!(carol[1].starts_with("This chat gets your Yulius notifications"), "{carol:?}");
+    assert!(
+        carol[1].starts_with("This chat gets your Yulius notifications"),
+        "{carol:?}"
+    );
     Ok(())
 }
 

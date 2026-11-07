@@ -99,6 +99,17 @@ impl App {
         if services.active().is_none() {
             return;
         }
+        // Only tasks and subscriptions are told; every other event costs nothing.
+        if let UiEvent::TaskRemoved { task_id } = &envelope.event {
+            services.notifier.forget(&format!("task:{task_id}"));
+            return;
+        }
+        if !matches!(
+            envelope.event,
+            UiEvent::TaskUpdated { .. } | UiEvent::AccountUpdated { .. }
+        ) {
+            return;
+        }
         // Nobody linked: nothing to read or remember (keeps the notifier ahead of the bus).
         if self
             .deps
@@ -111,10 +122,6 @@ impl App {
         }
         let notice = match &envelope.event {
             UiEvent::TaskUpdated { task } => self.task_event_notice(task).await,
-            UiEvent::TaskRemoved { task_id } => {
-                services.notifier.forget(&format!("task:{task_id}"));
-                Ok(None)
-            }
             UiEvent::AccountUpdated { account } => Ok(self.account_notice(account)),
             _ => Ok(None),
         };
