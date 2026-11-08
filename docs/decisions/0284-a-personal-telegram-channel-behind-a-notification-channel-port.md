@@ -1,8 +1,8 @@
-# 0280. A personal Telegram channel behind a notification channel port
+# 0284. A personal Telegram channel behind a notification channel port
 
 ## Status
 
-Accepted. Specified in [SPEC-437](../../.ai/specs/SPEC-437-telegram-channel-part-1-issue-1107-upstr.md)
+Accepted. Specified in [SPEC-440](../../.ai/specs/SPEC-440-telegram-channel-part-1-issue-1107-upstr.md)
 (part 1 of Quartio-Studio/yulius#1107). Builds on the instance service keys (SPEC-001 ADM-002,
 SPEC-195) and the event stream's visibility rule (SPEC-002 §7.8).
 

@@ -118,7 +118,7 @@ export function mountSettingsPage(ctx) {
     section('bell', 'Notifications', null,
       row('bell', 'Desktop notifications', h('span', null, desktopNote, ' · kept in this browser'), desktopToggle),
       row('clock', 'Notification history', h('span', null, notifCount, ' · kept in this browser'), clearButton),
-      // The personal Telegram channel (SPEC-437 TGC-010): sent by the server, so no tab is needed.
+      // The personal Telegram channel (SPEC-440 TGC-010): sent by the server, so no tab is needed.
       h('div', { class: 'settings-row telegram-row' },
         h('span', { class: 'settings-row-icon' }, icon('bell', { size: 16 })),
         h('div', { class: 'settings-row-text' }, h('div', null, 'Telegram'), h('div', { class: 'muted xs' }, 'Sent by this server to your own chat'), telegramLink(ctx)))),
@@ -143,7 +143,7 @@ export function mountSettingsPage(ctx) {
         superadmin ? tile('download', 'Instance', 'Version, updates, the Jev and Vidoc keys', '/admin/instance') : null,
         tile('plug', 'MCP for every sandbox', 'Tool servers attached in every sandbox', slug ? `/s/${slug}/mcp?scope=instance` : null),
         tile('book', 'Skills for every sandbox', 'Skills available in every sandbox', slug ? `/s/${slug}/skills?source=instance` : null))),
-      // The instance's Telegram bot (SPEC-437 TGC-001).
+      // The instance's Telegram bot (SPEC-440 TGC-001).
       telegramBotCard(ctx));
   }
 

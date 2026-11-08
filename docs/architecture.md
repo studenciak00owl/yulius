@@ -1647,8 +1647,8 @@ flowchart LR
 ## The personal Telegram channel
 
 Each person can get their notifications in their own Telegram chat
-([SPEC-437](../.ai/specs/SPEC-437-telegram-channel-part-1-issue-1107-upstr.md),
-[decision 0280](decisions/0280-a-personal-telegram-channel-behind-a-notification-channel-port.md)).
+([SPEC-440](../.ai/specs/SPEC-440-telegram-channel-part-1-issue-1107-upstr.md),
+[decision 0284](decisions/0284-a-personal-telegram-channel-behind-a-notification-channel-port.md)).
 
 - **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`,
   `receive`) is all a chat service implements; `crates/yulius/src/wiring/telegram.rs` is Telegram's

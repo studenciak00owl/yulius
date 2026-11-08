@@ -1,4 +1,4 @@
-//! The personal Telegram channel (SPEC-437) against a fake Bot API on 127.0.0.1: the bot set and
+//! The personal Telegram channel (SPEC-440) against a fake Bot API on 127.0.0.1: the bot set and
 //! removed by an instance administrator, chats linked with single-use codes and unlinked, and
 //! notifications filtered by the event stream's rule, redacted and rate bound. The real Telegram
 //! is never called.

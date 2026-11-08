@@ -1,4 +1,4 @@
-//! The personal Telegram channel (SPEC-437, ADR-0280): the instance's bot, set and removed by an
+//! The personal Telegram channel (SPEC-440, ADR-0284): the instance's bot, set and removed by an
 //! instance administrator; each person's chat, linked with a single-use code a browser session
 //! asks for; and the long poll that receives `/start <code>` and `/stop`.
 //!

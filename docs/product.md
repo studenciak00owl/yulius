@@ -402,7 +402,7 @@ watching, steering and unblocking.
   the same way without installing anything (SPEC-432). A task session whose Yulius tools Claude
   Code dropped is reconnected by Yulius, and an agent can call any Yulius tool from its shell with
   `yulius tool` (SPEC-432).
-- **Notifications on a person's phone** (SPEC-437, ADR-0280, part 1 of #1107): an instance
+- **Notifications on a person's phone** (SPEC-440, ADR-0284, part 1 of #1107): an instance
   administrator sets one Telegram bot for the instance in Settings → Administration (checked with
   Telegram, stored encrypted, never shown again). Each person links their own chat in Settings →
   Notifications with a single-use, 10-minute code (only from the browser, never with an API

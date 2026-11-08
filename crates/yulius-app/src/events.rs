@@ -91,7 +91,7 @@ impl Reach {
 
 impl crate::context::App {
     /// Whether `user`'s event stream carries `envelope`: the one rule of `WS /api/events` and of
-    /// the notifications sent to a person's chat (SPEC-437 TGC-021). Admin-only events reach
+    /// the notifications sent to a person's chat (SPEC-440 TGC-021). Admin-only events reach
     /// instance administrators, a person's own events only them, a sandbox's events its viewers
     /// (its writers for `writers_only`), and a playground guest no instance-wide event.
     pub async fn envelope_reaches(

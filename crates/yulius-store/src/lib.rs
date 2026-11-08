@@ -124,7 +124,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0047_cd_rollback.sql"),
     // Schema version 48 (SPEC-435).
     include_str!("migrations/0048_ci_job_limit_and_wait.sql"),
-    // Schema version 49 (SPEC-437).
+    // Schema version 49 (SPEC-440).
     include_str!("migrations/0049_telegram_channel.sql"),
 ];
 

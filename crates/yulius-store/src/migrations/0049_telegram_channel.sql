@@ -1,4 +1,4 @@
--- Yulius schema version 49 (SPEC-437): the instance's Telegram bot, its token sealed with the
+-- Yulius schema version 49 (SPEC-440): the instance's Telegram bot, its token sealed with the
 -- master key like the Jev and Vidoc keys, with the bot's id and username from `getMe`.
 ALTER TABLE instance ADD COLUMN telegram_token BLOB;
 ALTER TABLE instance ADD COLUMN telegram_bot_id INTEGER;

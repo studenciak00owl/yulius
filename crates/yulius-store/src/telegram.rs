@@ -1,4 +1,4 @@
-//! The instance's Telegram bot, link codes and linked chats (SPEC-437, migration 0049).
+//! The instance's Telegram bot, link codes and linked chats (SPEC-440, migration 0049).
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};

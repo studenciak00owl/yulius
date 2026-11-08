@@ -1,4 +1,4 @@
-//! A person's own notification channel (SPEC-437 TGC-030, ADR-0280): the one thing a chat
+//! A person's own notification channel (SPEC-440 TGC-030, ADR-0284): the one thing a chat
 //! service implements. Telegram is the first; the event side (which changes are worth a message,
 //! for whom, redaction and the rate bound) never names it.
 
@@ -116,7 +116,7 @@ pub struct ChatLink {
     pub choices: NotifyChoices,
 }
 
-/// The bot, link codes and linked chats (SPEC-437; migration 0049).
+/// The bot, link codes and linked chats (SPEC-440; migration 0049).
 #[async_trait]
 pub trait ChatLinkStore: Send + Sync {
     /// The saved bot.

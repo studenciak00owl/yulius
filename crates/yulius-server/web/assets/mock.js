@@ -184,7 +184,7 @@ function seed(params) {
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
-    // The personal Telegram channel (SPEC-437): `telegram=1` (a bot is set), `telegram=linked`
+    // The personal Telegram channel (SPEC-440): `telegram=1` (a bot is set), `telegram=linked`
     // (and the signed-in person's chat is linked). `__yuliusMock.telegramStart(text)` is a message
     // the bot receives, as `/start <code>` from the person's chat.
     telegram: {
@@ -4505,7 +4505,7 @@ route('POST', '/api/admin/jev/test', ({ db }) => {
   return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
 });
 
-// The personal Telegram channel (SPEC-437): the bot (instance administrators) and the person's chat.
+// The personal Telegram channel (SPEC-440): the bot (instance administrators) and the person's chat.
 function telegramBotView(db) {
   const t = db.telegram;
   return { configured: Boolean(t.bot), bot_username: t.bot, set_at: t.setAt, set_by: t.setBy, state: t.bot ? 'polling' : 'off', last_error: null, linked: t.linkedAt ? 1 : 0 };
@@ -6183,7 +6183,7 @@ export function createMockTransport(params) {
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
     return true;
   };
-  // The bot receives `text` from the person's chat (SPEC-437): `/start <code>` with the shown code
+  // The bot receives `text` from the person's chat (SPEC-440): `/start <code>` with the shown code
   // links it, once. Says whether it linked.
   db.telegramStart = (text) => {
     const code = String(text).replace(/^\/start\s+/, '');

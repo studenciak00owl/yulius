@@ -1715,7 +1715,7 @@ span.composer-attachment-open { cursor: default; }
 .agent-token-label { font-weight: 500; }
 .settings-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .settings-row-control { display: flex; align-items: center; gap: 8px; }
-/* The personal Telegram channel (SPEC-437): its link, code and choices span the row's text column. */
+/* The personal Telegram channel (SPEC-440): its link, code and choices span the row's text column. */
 .telegram-row { grid-template-columns: 20px minmax(0, 1fr); align-items: start; }
 .telegram-link { display: grid; gap: 8px; margin-top: 8px; }
 .telegram-link .row { flex-wrap: wrap; }

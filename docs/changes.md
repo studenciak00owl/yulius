@@ -45,7 +45,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `yulius` binary of the base it started on, so after the update its bridges did not ping, and the
   watch read them as dropped. Now it reconnects only a session whose MCP is known to be gone: its
   bridge pinged and stopped, or a run this server spawned never connected.
-- Notifications reach a person's own Telegram chat (SPEC-437, ADR-0280, part 1 of upstream #1107).
+- Notifications reach a person's own Telegram chat (SPEC-440, ADR-0284, part 1 of upstream #1107).
   An instance administrator sets one bot in Settings → Administration (checked with `getMe`, sealed,
   removable, which stops polling and unlinks every chat). Each person links their private chat with
   a single-use 10-minute code from a browser session (`t.me/<bot>?start=<code>`), unlinks in

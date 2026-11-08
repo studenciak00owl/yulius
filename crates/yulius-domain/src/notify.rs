@@ -1,4 +1,4 @@
-//! Notifications sent to a person's own chat channel (SPEC-437, ADR-0280): which task and
+//! Notifications sent to a person's own chat channel (SPEC-440, ADR-0284): which task and
 //! account changes are worth a message, its plain text, the per-person rate bound that folds a
 //! burst into one summary, and the chat commands of linking. Nothing here names a channel.
 

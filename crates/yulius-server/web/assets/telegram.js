@@ -1,4 +1,4 @@
-// The personal Telegram channel (SPEC-437): the instance's bot, set and removed by an instance
+// The personal Telegram channel (SPEC-440): the instance's bot, set and removed by an instance
 // administrator (Settings → Administration, TGC-001), and each person's own chat, linked with a
 // single-use code and unlinked in Settings → Notifications (TGC-010..TGC-020). The token goes to
 // the server once and never comes back.

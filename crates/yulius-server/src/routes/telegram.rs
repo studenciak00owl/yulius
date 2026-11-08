@@ -1,4 +1,4 @@
-//! The personal Telegram channel (SPEC-437): the instance's bot and each person's linked chat.
+//! The personal Telegram channel (SPEC-440): the instance's bot and each person's linked chat.
 
 use axum::Json;
 use axum::extract::State;

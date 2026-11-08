@@ -1,4 +1,4 @@
-//! What reaches a person's own chat (SPEC-437 TGC-020..TGC-024, ADR-0280): the notifier reads
+//! What reaches a person's own chat (SPEC-440 TGC-020..TGC-024, ADR-0284): the notifier reads
 //! the UI event bus, keeps what the notification center would tell (a task entering Needs you,
 //! a new `needs_you` request, Done, an abnormal end, a subscription problem), sends it only to
 //! the linked people whose event stream carries that event and who chose that kind, redacted

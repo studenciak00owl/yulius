@@ -3,7 +3,7 @@ yulius-task: 7c918f4c-5e63-4317-b00e-274ed0147e65
 status: done
 ---
 
-# SPEC-437: A personal Telegram channel for notifications (part 1 of #1107)
+# SPEC-440: A personal Telegram channel for notifications (part 1 of #1107)
 
 Status: done
 Date: 2026-11-07
@@ -175,7 +175,7 @@ any inbound port.
 
 ## Decisions
 
-- [ADR-0280](../../docs/decisions/0280-a-personal-telegram-channel-behind-a-notification-channel-port.md):
+- [ADR-0284](../../docs/decisions/0284-a-personal-telegram-channel-behind-a-notification-channel-port.md):
   one bot per instance with its token sealed like the instance's service keys, personal linking by
   a single-use browser-issued code, long polling, and a `NotificationChannel` port fed from the
   UI event bus under the event stream's own visibility rule.

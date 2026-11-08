@@ -247,7 +247,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/jev/adopt", post(updates::adopt_jev))
         .route("/api/admin/jev/test", post(updates::test_jev))
-        // The personal Telegram channel's bot (SPEC-437 TGC-001).
+        // The personal Telegram channel's bot (SPEC-440 TGC-001).
         .route(
             "/api/admin/telegram",
             get(telegram::bot)
@@ -416,7 +416,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}/notes/presence",
             put(notes::sandbox_presence),
         )
-        // The caller's own Telegram chat (SPEC-437 TGC-010..TGC-020).
+        // The caller's own Telegram chat (SPEC-440 TGC-010..TGC-020).
         .route(
             "/api/me/telegram",
             get(telegram::me).delete(telegram::unlink),

@@ -4,7 +4,7 @@ import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts'
 
 failOnPageErrors();
 
-// The personal Telegram channel (SPEC-437): an instance administrator sets and removes the bot in
+// The personal Telegram channel (SPEC-440): an instance administrator sets and removes the bot in
 // Settings → Administration (TGC-001, TGC-002); a person links their chat with a single-use code,
 // chooses what reaches it and unlinks in Settings → Notifications (TGC-010..TGC-020).
 

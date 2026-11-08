@@ -123,7 +123,7 @@ pub struct ServeArgs {
     /// through the egress proxy. Unset or unusable: Vidoc is off, and the scan says "not run".
     #[arg(long, env = "YULIUS_VIDOC_API_KEY_FILE")]
     pub vidoc_api_key_file: Option<PathBuf>,
-    /// Telegram's Bot API for the personal notification channel (SPEC-437): HTTPS, or HTTP on a
+    /// Telegram's Bot API for the personal notification channel (SPEC-440): HTTPS, or HTTP on a
     /// loopback host for a fake in tests. The bot's token is set in Settings, never here.
     #[arg(long, env = "YULIUS_TELEGRAM_API_URL",
           default_value = crate::wiring::telegram::TELEGRAM_API,
@@ -484,7 +484,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     let app = App::new(config, deps);
     app.set_intake(intake_services(args));
     app.set_vidoc(vidoc_services(args));
-    // The personal Telegram channel (SPEC-437): its bot is set by an instance administrator.
+    // The personal Telegram channel (SPEC-440): its bot is set by an instance administrator.
     app.set_channel(yulius_app::telegram::ChannelServices::new(
         Arc::new(crate::wiring::telegram::TelegramBots::new(
             args.telegram_api_url.clone(),
@@ -569,7 +569,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     tracing::info!(public = %args.bind, internal = %args.internal_bind, "yulius listening");
     app.start_background();
     app.start_update_loop();
-    // Long polling of the saved bot, if any, and the notifier (SPEC-437 TGC-003).
+    // Long polling of the saved bot, if any, and the notifier (SPEC-440 TGC-003).
     app.start_channel().await;
     match app.install_skill_catalog().await {
         Ok(files) => tracing::debug!(files, "skill catalog ready"),

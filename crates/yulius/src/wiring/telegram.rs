@@ -1,4 +1,4 @@
-//! Telegram's Bot API as the personal [`NotificationChannel`] (SPEC-437, ADR-0280).
+//! Telegram's Bot API as the personal [`NotificationChannel`] (SPEC-440, ADR-0284).
 //!
 //! `{base}/bot<token>/getMe`, `sendMessage` (plain text, no link previews) and `getUpdates`
 //! (long polling, messages only). The base URL is `https://api.telegram.org` unless

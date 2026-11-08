@@ -39,7 +39,7 @@ pub async fn events(
 async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
     let mut rx = app.events.subscribe();
     // Which sandboxes' events this person sees and whose files they may read (SPEC-127),
-    // decided once and again at each re-check (`App::envelope_reaches`, also SPEC-437's rule).
+    // decided once and again at each re-check (`App::envelope_reaches`, also SPEC-440's rule).
     let mut reach = Reach::default();
     // The person as of the last re-check: their roles decide admin-only events (#722).
     let mut user = ctx.user.clone();

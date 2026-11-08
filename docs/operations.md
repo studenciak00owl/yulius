@@ -732,7 +732,7 @@ wins over the file.
 ### Telegram notifications
 
 An instance administrator sets one Telegram bot (from @BotFather) in Settings → Administration →
-Telegram bot; people then link their own chats in Settings → Notifications (SPEC-437). The server
+Telegram bot; people then link their own chats in Settings → Notifications (SPEC-440). The server
 only makes outbound HTTPS requests to Telegram (long polling `getUpdates`, `sendMessage`), so no
 port is opened and an instance on a private network works. After an error it retries with backoff
 (1 s doubling to 60 s); the card says `retrying` and why (`refused`: the token was revoked, set a
@@ -741,7 +741,7 @@ and unlinks every chat. The log names the bot, never its token.
 
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |
-| `--telegram-api-url` / `YULIUS_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram's Bot API for the personal notification channel (SPEC-437). HTTPS, or HTTP on a loopback host only (a fake Bot API in tests). The bot token itself is set in Settings → Administration, never here; the server only makes outbound requests (long polling), so no port is opened. |
+| `--telegram-api-url` / `YULIUS_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram's Bot API for the personal notification channel (SPEC-440). HTTPS, or HTTP on a loopback host only (a fake Bot API in tests). The bot token itself is set in Settings → Administration, never here; the server only makes outbound requests (long polling), so no port is opened. |
 
 ### Security scans (Vidoc)
 

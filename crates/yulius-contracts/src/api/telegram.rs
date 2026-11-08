@@ -1,4 +1,4 @@
-//! The personal Telegram channel (SPEC-437): the instance's bot and each person's linked chat.
+//! The personal Telegram channel (SPEC-440): the instance's bot and each person's linked chat.
 //! No response ever carries the bot token.
 
 use serde::{Deserialize, Serialize};
