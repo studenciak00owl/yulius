@@ -26,6 +26,7 @@ mod claude_gate;
 mod claude_updates;
 mod cli;
 mod cockpit;
+mod codex;
 mod connection_health;
 mod context_full;
 mod cross_sandbox;

@@ -157,11 +157,19 @@ impl HarnessPort for FakeAgentHarness {
             }
             yulius_app::ports::harness::SessionMode::New { .. } => None,
         };
-        let session = plan
-            .session_id
-            .clone()
-            .or(resumed)
-            .unwrap_or_else(|| "fake-session".into());
+        let codex = launch.harness == Harness::Codex;
+        // Codex names its own session: a new fake one takes the run directory's name (the
+        // attempt id), which Yulius learns from the rollout's `session_meta` or the hook.
+        let session = plan.session_id.clone().or(resumed).unwrap_or_else(|| {
+            if codex {
+                launch
+                    .run_dir
+                    .file_name()
+                    .map_or_else(|| "fake-codex".into(), |n| n.to_string_lossy().into_owned())
+            } else {
+                "fake-session".into()
+            }
+        });
         let mut argv = vec![
             self.fake.to_string_lossy().into_owned(),
             "--mode".into(),
@@ -171,7 +179,21 @@ impl HarnessPort for FakeAgentHarness {
             "--report-env".into(),
             "YULIUS_TASK_TOKEN".into(),
         ];
-        if self.options.transcript {
+        if let (true, Some(home)) = (codex, &launch.codex_home) {
+            // The rollout lives in the sandbox's shared sessions, reached through the home's
+            // `sessions` link as Codex reaches it (SPEC-445 CDX-003).
+            let sessions = home.join("sessions");
+            let path = match self.inner.find_codex_rollout(&sessions, &session) {
+                Ok(Some(existing)) => existing,
+                _ => sessions
+                    .join("2026/11/09")
+                    .join(format!("rollout-2026-11-09T00-00-00-{session}.jsonl")),
+            };
+            if self.options.transcript {
+                argv.extend(["--transcript".into(), path.to_string_lossy().into_owned()]);
+            }
+            argv.extend(["--transcript-kind".into(), "codex".into()]);
+        } else if self.options.transcript {
             let path =
                 self.inner
                     .claude_transcript(&launch.sandbox_home, &launch.worktree, &session);

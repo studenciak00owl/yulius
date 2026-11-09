@@ -560,7 +560,7 @@ function renamableName(account, rename) {
  */
 export function accountUsage(account, { foldable = false, open = false, rename = null, showEmail = false } = {}) {
   const usage = account.usage || {};
-  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
+  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider === 'openai' ? 'Codex' : account.provider;
   const state = ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
   // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
   const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
