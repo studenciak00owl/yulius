@@ -26,6 +26,8 @@ nix = { workspace = true }
 uuid = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# The signed-in user of a Codex `auth.json` (its `id_token` claims, SPEC-445 CDX-006).
+base64 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

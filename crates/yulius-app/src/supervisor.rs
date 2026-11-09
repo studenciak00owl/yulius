@@ -2301,7 +2301,10 @@ impl App {
             return;
         };
         let root = self.sandbox_dir(&task.sandbox_id);
-        self.keep_codex_refresh(&root, account_id).await;
+        let held = self.keep_codex_refresh(&root, account_id).await;
+        // Under the launch lock: a run of the account starting now in this sandbox has written
+        // its `auth.json` and is recorded live once the lock is free, so its file is never taken.
+        let _launch = self.supervisor.launch.lock().await;
         let others = match self.deps.store.live_attempts().await {
             Ok(live) => {
                 let mut others = false;
@@ -2320,8 +2323,24 @@ impl App {
             }
             Err(_) => true,
         };
-        if !others && let Err(err) = remove_codex_auth(&root, account_id) {
-            tracing::warn!(task = %task_id, error = %err, "the run's Codex credentials could not be removed");
+        if others {
+            return;
+        }
+        // Only the vault's own copy goes: a file that did not reach the vault (a refresh that
+        // could not be stored, or one not taken) may hold the only copy of rotated tokens.
+        match read_codex_auth(&root, account_id) {
+            Ok(Some(file)) if held.as_ref().is_some_and(|h| h.expose().as_bytes() == file) => {
+                if let Err(err) = remove_codex_auth(&root, account_id) {
+                    tracing::warn!(task = %task_id, error = %err, "the run's Codex credentials could not be removed");
+                }
+            }
+            Ok(Some(_)) => {
+                tracing::warn!(task = %task_id, "the run's Codex credentials did not reach the vault; left in place");
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "the run's Codex credentials could not be read");
+            }
         }
     }
 
@@ -4581,9 +4600,6 @@ mod tests {
         }
     }
 
-    /// #661: a `home` link fails the start, dangling (nothing is made where it points) or to a
-    /// host folder (which is not taken as the home); a missing home is made, an existing one
-    /// kept (SPEC-266 STB-004).
     /// SPEC-445 CDX-006: the run's `auth.json` is read without following a link the agent put
     /// there, and a home that is a link is refused; a missing one is nothing to read.
     #[test]
@@ -4653,6 +4669,9 @@ mod tests {
         Ok(())
     }
 
+    /// #661: a `home` link fails the start, dangling (nothing is made where it points) or to a
+    /// host folder (which is not taken as the home); a missing home is made, an existing one
+    /// kept (SPEC-266 STB-004).
     #[test]
     fn the_home_is_made_without_following_a_link() -> Result<(), Box<dyn std::error::Error>> {
         let sandbox = tempfile::tempdir()?;

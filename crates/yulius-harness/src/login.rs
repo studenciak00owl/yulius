@@ -138,7 +138,8 @@ pub const CODEX_REFRESH_SKEW_MS: i64 = 5 * 60 * 1000;
 
 /// Whether the `auth.json` a Codex run left (`fresh`) replaces the account's stored one: Codex
 /// refreshed the same ChatGPT sign-in (same `tokens.account_id`, a usable credential) at a
-/// `last_refresh` newer than the stored one and at most [`CODEX_REFRESH_SKEW_MS`] after `now`.
+/// `last_refresh` newer than the stored one and at most [`CODEX_REFRESH_SKEW_MS`] after `now`,
+/// of the same signed-in user when the stored `id_token` names one.
 /// The file lies in the agent's sandbox: one it wrote itself (another account, an API key, a date
 /// ahead so that real refreshes never win) is not taken. An API-key account is never replaced.
 #[must_use]
@@ -158,11 +159,37 @@ pub fn codex_auth_replaces(fresh: &[u8], stored: &[u8], now: Timestamp) -> bool 
     else {
         return false;
     };
+    // In a Team workspace every member shares `account_id`: the signed-in user must match too.
+    let user_matches = match signed_in_user(stored) {
+        Some(user) => signed_in_user(fresh).as_deref() == Some(user.as_str()),
+        None => true,
+    };
     validate_codex_auth(fresh).is_ok()
         && account(stored).is_some()
         && account(fresh) == account(stored)
+        && user_matches
         && refreshed.0 <= now.0.saturating_add(CODEX_REFRESH_SKEW_MS)
         && newer_codex_auth(fresh, stored) == Ordering::Greater
+}
+
+/// The signed-in user of a ChatGPT `auth.json`: the `sub` claim of its `id_token` (read, not
+/// verified: it only tells two sign-ins apart).
+fn signed_in_user(auth_json: &[u8]) -> Option<String> {
+    use base64::Engine as _;
+    let value: Value = serde_json::from_slice(auth_json).ok()?;
+    let token = value.get("tokens")?.get("id_token")?.as_str()?;
+    let payload = token.split('.').nth(1)?;
+    let claims: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload.trim_end_matches('='))
+            .ok()?,
+    )
+    .ok()?;
+    claims
+        .get("sub")
+        .and_then(Value::as_str)
+        .filter(|sub| !sub.is_empty())
+        .map(str::to_owned)
 }
 
 /// The last Claude OAuth token in `output`: `sk-ant-oat01-` followed by at least 20 of

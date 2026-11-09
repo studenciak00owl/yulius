@@ -218,13 +218,21 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
             },
         )
         .await?;
-        let lineage = app.deps.store.provider_sessions(&id).await?;
-        assert!(
-            lineage
-                .iter()
-                .any(|l| l.session_id == session && l.harness == Harness::Codex),
-            "{lineage:?}"
-        );
+        // The lineage records it in the same watch round, right after the attempt.
+        wait_for(
+            "the session in the lineage",
+            Duration::from_secs(10),
+            || async {
+                app.deps
+                    .store
+                    .provider_sessions(&id)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|l| l.session_id == session && l.harness == Harness::Codex)
+            },
+        )
+        .await?;
         assert!(
             sandbox_dir
                 .join("codex/sessions/2026/11/09")
@@ -356,6 +364,9 @@ fn only_a_genuine_codex_refresh_reaches_the_vault() -> TestResult {
         })
         .await?;
         assert_eq!(stored_credential(&app, &account).await?, left);
+        // A file that did not reach the vault is not removed: were it a genuine refresh that
+        // could not be stored, it is the only copy of the rotated tokens.
+        assert_eq!(std::fs::read_to_string(home.join("auth.json"))?, forged);
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

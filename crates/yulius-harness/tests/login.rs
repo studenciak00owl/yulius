@@ -204,3 +204,35 @@ fn only_a_genuine_refresh_replaces_the_stored_codex_credential() {
     ));
     assert!(!codex_auth_replaces(b"{}", &stored, now));
 }
+
+/// A ChatGPT `auth.json` whose `id_token` names the signed-in user `sub`.
+fn signed_in(sub: &str, refreshed: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(format!(r#"{{"sub":"{sub}","email":"{sub}@example.com"}}"#));
+    format!(
+        r#"{{"auth_mode":"chatgpt","tokens":{{"id_token":"h.{claims}.s","access_token":"a","refresh_token":"r","account_id":"workspace-1"}},"last_refresh":"{refreshed}"}}"#
+    )
+    .into_bytes()
+}
+
+/// SPEC-445 CDX-006: in a Team workspace every member shares `account_id`: a refresh must also be
+/// of the same signed-in user (`sub` of the `id_token`).
+#[test]
+fn a_refresh_must_be_of_the_same_signed_in_user() {
+    let now = Timestamp(1_794_225_600_000);
+    let stored = signed_in("user-1", "2026-11-01T10:00:00Z");
+    assert!(codex_auth_replaces(
+        &signed_in("user-1", "2026-11-09T11:00:00Z"),
+        &stored,
+        now
+    ));
+    assert!(!codex_auth_replaces(
+        &signed_in("user-2", "2026-11-09T11:00:00Z"),
+        &stored,
+        now
+    ));
+    // A file without a readable id_token is not the stored user's either.
+    let bare = br#"{"auth_mode":"chatgpt","tokens":{"access_token":"a","account_id":"workspace-1"},"last_refresh":"2026-11-09T11:00:00Z"}"#;
+    assert!(!codex_auth_replaces(bare, &stored, now));
+}

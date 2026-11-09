@@ -107,6 +107,11 @@ refreshes during a run. A task never changes harness.
   openings with images, step-back, status line, sub-agent tails) stay Claude-only; a Codex goal
   task gets its request as its first prompt.
 
+- The run's `auth.json` is trusted only as a refresh of the same sign-in (`tokens.account_id` and
+  the `id_token`'s `sub`), and removed after the account's last run only when it equals the
+  vault's copy. Known limit: one account used at once in two sandboxes keeps two copies of its
+  rotating refresh token, and one of them can go stale (upstream's R-02; not verified live).
+
 ## Evidence
 
 (filled when done)
