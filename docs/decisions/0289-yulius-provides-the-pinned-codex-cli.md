@@ -68,6 +68,11 @@ CDX-011, CDX-012); fork task #4. Extends [ADR-0288](0288-fork-codex-returns-as-a
 - The fallback looks for `codex` on the host's `PATH`, while a run finds it in its sandbox's
   system layer: a `codex` added to the host after the sandbox base was built, or installed only
   inside one sandbox, is not taken into account until the base is rebuilt.
+- The install is warmed at start (Codex accounts exist), at a device sign-in and right after an
+  account is added by API key or import. Should a first Codex start still meet it, the queue and
+  capacity loops wait for it before starting the tasks behind it.
+- An import that lands between a cancelled sign-in's last check and its write can still be
+  overwritten by that sign-in (a window of one store call).
 - A relogin whose start still waits for the Codex CLI is not yet a running sign-in, so an import
   in that window does not cancel it; every sign-in that has started is cancelled and its
   credentials dropped.

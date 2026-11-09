@@ -604,6 +604,50 @@ async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
     Ok(())
 }
 
+/// SPEC-446 CLI-001: a Codex account that needs no sign-in (an API key, an imported auth.json)
+/// starts the Codex CLI's install in the background, so its first task does not wait for it.
+#[tokio::test]
+async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let platform = yulius_domain::agent_cli::codex::platform("linux", "x86_64").ok_or("x64")?;
+    // An unreachable registry: the install fails at once and says so.
+    let cli = Arc::new(yulius::wiring::codex_cli::CodexCli::with_registry(
+        root.path().to_path_buf(),
+        "http://127.0.0.1:1".into(),
+        Some(platform),
+        false,
+    )?);
+    let adapter =
+        yulius::wiring::harness::HarnessAdapter::new("/bin/false".into(), "http://127.0.0.1:1")
+            .with_codex_cli(Arc::clone(&cli));
+    let host = Arc::new(FakeHost::default());
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        session_host: Some(host.clone()),
+        harness: Some(Arc::new(adapter)),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    assert_eq!(cli.ready(), Ok(None), "nothing tried yet");
+    let r = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "openai", "label": "Codex key", "api_key": "sk-proj-SYNTHETIC0123456789abcdefghij"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let tried = tokio::time::timeout(Duration::from_secs(10), async {
+        while cli.ready().is_ok() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(tried.is_ok(), "no install was started");
+    Ok(())
+}
+
 /// SPEC-445 CDX-005: a Codex sign-in that stored no usable credentials fails the account.
 #[tokio::test]
 async fn a_codex_login_without_credentials_fails() -> TestResult {

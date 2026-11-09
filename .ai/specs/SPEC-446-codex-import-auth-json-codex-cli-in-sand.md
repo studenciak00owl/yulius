@@ -116,9 +116,14 @@ Run on 2026-11-09/10 on `feat/codex-harness` (from `e3faca10`).
   violations).
 - Independent review (fresh read-only session): round 1 REQUEST_CHANGES (2 major, 7 minor), all
   answered test-first in `79e88062` except the host-fallback mismatch and the relogin window,
-  recorded in ADR-0289's consequences. Round 2 could not run to its end (the reviewer hit the
-  account's API limit); its checks were done by hand: `start_run_if` is the only way into
-  `launch_attempt` and installs before the lock.
+  recorded in ADR-0289's consequences. A first round-2 attempt stopped at the account's API
+  limit.
+- Review round 2 (fresh read-only session, after the limit reset): APPROVE with 3 minor and 2
+  nits. Answered test-first: the unsupported platform's reason reaches a start
+  (`codex_cli::an_unsupported_platform_gives_its_reason`) and an account added by API key or
+  import warms the install (`accounts::a_codex_account_without_a_sign_in_starts_the_cli_install`);
+  `codex_cli::` `accounts::` `codex::` 35 passed. The queue waiting on a first install and the
+  one-store-call import window are recorded in ADR-0289's consequences.
 - Not verified (needs a live Codex account): a real laptop `auth.json` imported and used by a
   run, its refresh by Codex and write-back, and the provided CLI inside a namespace-isolated
   sandbox of this instance.

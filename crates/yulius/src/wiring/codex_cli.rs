@@ -143,6 +143,9 @@ impl CodexCli {
     /// # Errors
     /// The recent failure.
     pub fn ready(&self) -> Result<Option<ProvidedCli>, UpdateError> {
+        if self.platform.is_none() {
+            return Err(unsupported());
+        }
         if let Some(provided) = self.installed() {
             return Ok(Some(provided));
         }
@@ -187,11 +190,7 @@ impl CodexCli {
 
     async fn ensure_now(&self) -> Result<ProvidedCli, UpdateError> {
         let Some(platform) = self.platform else {
-            return fail(format!(
-                "Yulius provides no Codex CLI for {} {}",
-                std::env::consts::OS,
-                std::env::consts::ARCH
-            ));
+            return Err(unsupported());
         };
         let _one = self.installing.lock().await;
         // Another caller may have installed it while this one waited, or just failed to.
@@ -345,6 +344,15 @@ impl CodexCli {
             }
         }
     }
+}
+
+/// Why this host gets no provided Codex CLI.
+fn unsupported() -> UpdateError {
+    UpdateError(format!(
+        "Yulius provides no Codex CLI for {} {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ))
 }
 
 /// Sets `path`'s permission bits.

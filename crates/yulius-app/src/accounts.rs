@@ -858,6 +858,14 @@ impl App {
             let view = account_view(&account, &[]);
             self.publish_account(view.clone());
             self.capacity_changed();
+            // No sign-in installed the Codex CLI: its install starts now, so the account's first
+            // task does not wait for it (SPEC-446 CLI-001).
+            let app = Arc::clone(self);
+            tokio::spawn(async move {
+                if let Err(err) = app.deps.harness.provide_codex(true).await {
+                    tracing::warn!(error = %err, "the Codex CLI is not ready; the next Codex start tries again");
+                }
+            });
             return Ok(AccountLoginStarted {
                 account: view,
                 login_id: None,

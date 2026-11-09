@@ -307,6 +307,26 @@ async fn an_earlier_release_goes_once_nothing_runs_it() -> TestResult {
     Ok(())
 }
 
+/// CLI-002: a platform without a provided CLI says so to a caller that must not wait, not that
+/// the CLI is still being installed.
+#[tokio::test]
+async fn an_unsupported_platform_gives_its_reason() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let cli = Arc::new(CodexCli::with_registry(
+        dir.path().join("codex-cli"),
+        "http://127.0.0.1:1".into(),
+        None,
+        false,
+    )?);
+    let refused = cli.ensure().await.err().ok_or("no CLI expected")?;
+    assert!(
+        refused.to_string().contains("provides no Codex CLI"),
+        "{refused}"
+    );
+    assert_eq!(cli.ready().err(), Some(refused));
+    Ok(())
+}
+
 /// CLI-001: a tarball that is not the pinned one, that names a path outside its release or a
 /// link, that holds no binary or one for another machine, or that is too large is refused, and
 /// nothing is left installed or behind.
