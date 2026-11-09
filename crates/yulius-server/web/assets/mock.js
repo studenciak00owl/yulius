@@ -3803,14 +3803,16 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
   if (!['anthropic', 'openai'].includes(body.provider)) fail(422, 'invalid', 'provider must be anthropic (Claude) or openai (Codex)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
   // An OpenAI API key makes a Codex account at once, with no sign-in (SPEC-445).
-  if (body.api_key) {
-    if (body.provider !== 'openai') fail(422, 'invalid', 'an API key is only for an openai (Codex) account');
-    if (!/^sk-[A-Za-z0-9_-]{20,512}$/.test(body.api_key.trim())) fail(422, 'invalid', 'the API key is not an OpenAI API key (sk-…)');
-  }
+  // So does the auth.json of a `codex login` made elsewhere (SPEC-445 CDX-011).
+  if (body.api_key && body.auth_json) fail(422, 'invalid', 'give either an API key or an auth.json, not both');
+  if ((body.api_key || body.auth_json) && body.provider !== 'openai') fail(422, 'invalid', 'an API key or an auth.json is only for an openai (Codex) account');
+  if (body.api_key && !/^sk-[A-Za-z0-9_-]{20,512}$/.test(body.api_key.trim())) fail(422, 'invalid', 'the API key is not an OpenAI API key (sk-…)');
+  if (body.auth_json) mockCodexImport(body.auth_json);
+  const immediate = Boolean(body.api_key || body.auth_json);
   db.nextId += 1;
-  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: body.api_key ? 'ok' : 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: immediate ? 'ok' : 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
-  if (body.api_key) {
+  if (immediate) {
     emit(db, { type: 'account.updated', account });
     return json(201, { account });
   }
@@ -3852,6 +3854,26 @@ route('POST', `/api/admin/accounts/${ID}/usage`, ({ db, p }) => {
   account.usage = { ...account.usage, observed_at: new Date().toISOString() };
   account.last_error = null;
   return account;
+});
+/** Refuses an imported auth.json that is not a full ChatGPT sign-in of Codex (SPEC-445 CDX-011). */
+function mockCodexImport(text) {
+  let auth = null;
+  try { auth = JSON.parse(String(text).trim()); } catch { /* refused below */ }
+  if (!auth || typeof auth !== 'object' || Array.isArray(auth)) fail(422, 'invalid', 'the auth.json cannot be imported: the Codex credentials are not valid JSON');
+  if (auth.auth_mode !== 'chatgpt') fail(422, 'invalid', 'the auth.json cannot be imported: the file is not a ChatGPT sign-in of Codex (its auth_mode is not "chatgpt")');
+  const tokens = auth.tokens || {};
+  if (!['id_token', 'access_token', 'refresh_token', 'account_id'].every((k) => typeof tokens[k] === 'string' && tokens[k].trim())) fail(422, 'invalid', 'the auth.json cannot be imported: the ChatGPT sign-in lacks its id_token, access_token, refresh_token or account_id');
+}
+route('POST', `/api/admin/accounts/${ID}/import`, ({ db, p, body }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  if (account.provider !== 'openai') fail(422, 'invalid', 'an auth.json is only for an openai (Codex) account');
+  mockCodexImport(body.auth_json);
+  db.unsignedAccounts.delete(account.id);
+  Object.assign(account, { status: 'ok', last_error: null });
+  emit(db, { type: 'account.updated', account });
+  return json(200, { account });
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   adminOnly(db);
