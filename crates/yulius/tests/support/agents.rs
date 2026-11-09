@@ -116,6 +116,9 @@ pub struct FakeAgentOptions {
     pub answers_first_message: bool,
     /// Open on Claude Code's folder-trust dialog, answered by the first line (`--trust-prompt`).
     pub trust_prompt: bool,
+    /// The Codex CLI the harness says it provides (SPEC-446 CLI-002); its program is recorded in
+    /// `fake-launch.txt`, the fake agent runs instead.
+    pub provided_codex: Option<yulius_app::ports::harness::ProvidedCli>,
 }
 
 /// See the module docs.
@@ -140,14 +143,22 @@ impl FakeAgentHarness {
 }
 
 impl HarnessPort for FakeAgentHarness {
+    fn provide_codex(&self) -> yulius_app::ports::harness::ProvideFuture<'_> {
+        let provided = self.options.provided_codex.clone();
+        Box::pin(async move { Ok(provided) })
+    }
+
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
         let mut plan = self.inner.plan(launch)?;
         // Tests read what each launch asked for from its run directory.
         let _ = std::fs::write(
             launch.run_dir.join("fake-launch.txt"),
             format!(
-                "mode={:?}\nmodel={:?}\neffort={:?}\n",
-                launch.mode, launch.model, launch.effort
+                "mode={:?}\nmodel={:?}\neffort={:?}\nprogram={:?}\n",
+                launch.mode,
+                launch.model,
+                launch.effort,
+                plan.plan.argv.first()
             ),
         );
         // A resume continues the same session (and transcript), like `claude --resume <id>`.

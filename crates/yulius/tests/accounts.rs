@@ -559,6 +559,51 @@ async fn codex_device_login_seals_the_auth_file() -> TestResult {
     Ok(())
 }
 
+/// SPEC-446 CLI-002: the device sign-in starts the Codex CLI Yulius provides, by its path.
+#[tokio::test]
+async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
+    let host = Arc::new(FakeHost::default());
+    let root = tempfile::tempdir()?;
+    let platform = yulius_domain::agent_cli::codex::platform("linux", "x86_64").ok_or("x64")?;
+    let program = root.path().join(platform.install_name()).join("bin/codex");
+    std::fs::create_dir_all(program.parent().ok_or("bin")?)?;
+    std::fs::write(&program, b"installed")?;
+    let cli = yulius::wiring::codex_cli::CodexCli::with_registry(
+        root.path().to_path_buf(),
+        "http://127.0.0.1:1".into(),
+        Some(platform),
+        false,
+    )?;
+    let adapter =
+        yulius::wiring::harness::HarnessAdapter::new("/bin/false".into(), "http://127.0.0.1:1")
+            .with_codex_cli(Arc::new(cli));
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        session_host: Some(host.clone()),
+        harness: Some(Arc::new(adapter)),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let s = Setup { h, host, admin };
+    s.host.push(Script {
+        chunks: vec!["Enter this one-time code\n".into()],
+        gated: true,
+        ..Script::default()
+    });
+    create(&s, "openai", "Codex provided").await?;
+    let plans = s.host.plans();
+    let (_, plan, _) = plans.first().ok_or("spawned")?;
+    assert_eq!(
+        plan.argv,
+        [
+            program.to_string_lossy().into_owned(),
+            "login".into(),
+            "--device-auth".into()
+        ]
+    );
+    Ok(())
+}
+
 /// SPEC-445 CDX-005: a Codex sign-in that stored no usable credentials fails the account.
 #[tokio::test]
 async fn a_codex_login_without_credentials_fails() -> TestResult {

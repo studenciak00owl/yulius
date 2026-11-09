@@ -487,6 +487,54 @@ fn an_imported_codex_sign_in_reaches_the_run_and_its_refresh_is_kept() -> TestRe
     Ok(())
 }
 
+/// SPEC-446 CLI-002, AC-446-3: a Codex task starts the Codex CLI Yulius provides by its absolute
+/// path, never `codex` from a `PATH` that may not have it.
+#[test]
+fn a_codex_task_starts_the_provided_codex_cli() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let dir = data.join("codex-cli").join("0.167.0-linux-x64");
+    let program = dir.join("bin/codex");
+    let agent = FakeAgentOptions {
+        provided_codex: Some(yulius_app::ports::harness::ProvidedCli {
+            program: program.clone(),
+            dir,
+        }),
+        ..FakeAgentOptions::default()
+    };
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_codex_task(&app, &sandbox, &user, "Codex provided").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let attempt = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("no live attempt")?;
+        let launch = std::fs::read_to_string(Path::new(&attempt.run_dir).join("fake-launch.txt"))?;
+        assert!(
+            launch.contains(&format!("program=Some({:?})", program.to_string_lossy())),
+            "{launch}"
+        );
+        app.send_input(&id, b"/exit\r").await?;
+        wait_for("the run's end", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-445 CDX-009, AC-445-2: a Codex task at its usage limit moves to another Codex account by
 /// a native resume of the same session, never to the Claude account, and the limited account is
 /// marked; Codex does not go on by itself, so the resume asks it to.

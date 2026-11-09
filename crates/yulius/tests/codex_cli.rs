@@ -241,6 +241,10 @@ async fn the_pinned_release_is_installed_once_as_its_own_tree() -> TestResult {
     Ok(())
 }
 
+/// A refused install: its name, the tarball served, the bytes the sha512 is pinned to (`None`:
+/// the tarball's) and a smaller unpacked bound.
+type RefusedCase = (&'static str, Vec<u8>, Option<Vec<u8>>, Option<u64>);
+
 /// CLI-001: a tarball that is not the pinned one, that names a path outside its release or a
 /// link, that holds no binary or one for another machine, or that is too large is refused, and
 /// nothing is left installed or behind.
@@ -259,7 +263,7 @@ async fn a_refused_tarball_installs_nothing() -> TestResult {
         mode: 0o777,
         body: Vec::new(),
     };
-    let cases: Vec<(&str, Vec<u8>, Option<Vec<u8>>, Option<u64>)> = vec![
+    let cases: Vec<RefusedCase> = vec![
         (
             "not the pinned sha512",
             good.clone(),

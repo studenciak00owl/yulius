@@ -1224,6 +1224,17 @@ impl App {
         self: &Arc<Self>,
         account: &AccountRecord,
     ) -> AppResult<Arc<LoginSession>> {
+        // Codex signs in with the CLI Yulius provides, installed before the start lock so a first
+        // install holds no other sign-in (SPEC-446 CLI-002).
+        let program = match account.provider {
+            Provider::OpenAi => self
+                .deps
+                .harness
+                .provide_codex()
+                .await?
+                .map(|cli| cli.program),
+            Provider::Anthropic => None,
+        };
         let _serialized = self.logins.start.lock().await;
         self.prune_logins();
         let replaced = {
@@ -1255,7 +1266,10 @@ impl App {
         for d in [&dir, &home, &config_dir] {
             create_private_dir(d)?;
         }
-        let plan = self.login_plan(account.provider, &home, &config_dir);
+        let mut plan = self.login_plan(account.provider, &home, &config_dir);
+        if let (Some(program), Some(first)) = (program, plan.argv.first_mut()) {
+            *first = program.to_string_lossy().into_owned();
+        }
         let token = self.deps.crypto.random_bytes();
         let host = &self.deps.session_host;
         let started = async {
