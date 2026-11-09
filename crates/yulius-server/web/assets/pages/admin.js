@@ -175,14 +175,18 @@ const SIGN_IN_RUNNING = 'Finish Claude’s sign-in in the terminal below: open t
  */
 function authJsonInput() {
   let loaded = '';
+  // A chosen file is read before the dialog's button sends it.
+  let reading = Promise.resolve();
   const text = h('textarea', { class: 'textarea mono', rows: 5, autocomplete: 'off', spellcheck: 'false', placeholder: '{"auth_mode": "chatgpt", "tokens": {…}, …}', 'aria-label': 'auth.json' });
   const chosen = h('span', { class: 'muted small' });
-  const picker = h('input', { type: 'file', accept: '.json,application/json', class: 'auth-json-file', 'aria-label': 'auth.json file', onChange: async () => {
+  const picker = h('input', { type: 'file', accept: '.json,application/json', class: 'auth-json-file', 'aria-label': 'auth.json file', onChange: () => {
     const file = picker.files && picker.files[0];
-    loaded = file ? await file.text() : '';
-    text.value = '';
-    chosen.textContent = file ? `${file.name} is loaded.` : '';
     picker.value = '';
+    reading = (file ? file.text() : Promise.resolve('')).then((content) => {
+      loaded = content;
+      text.value = '';
+      chosen.textContent = file ? `${file.name} is loaded.` : '';
+    });
   } });
   text.addEventListener('input', () => { if (text.value) { loaded = ''; chosen.textContent = ''; } });
   const node = h('div', { class: 'field' },
@@ -193,6 +197,7 @@ function authJsonInput() {
   return {
     node,
     text,
+    ready: () => reading,
     value: () => text.value.trim() || loaded.trim(),
     clear: () => { text.value = ''; loaded = ''; chosen.textContent = ''; },
   };
@@ -511,6 +516,7 @@ export function mountAccountsPage(ctx, route) {
         { label: key || file ? 'Add subscription' : 'Continue to sign-in', kind: 'primary', run: async () => {
           if (!label.value.trim()) return invalid(label, 'Give the subscription a name.');
           if (key && !apiKey.value.trim()) return invalid(apiKey, 'Paste the OpenAI API key.');
+          if (file) await importer.ready();
           if (file && !importer.value()) return invalid(importer.text, 'Paste the auth.json or choose the file.');
           const body = { provider, label: label.value.trim() };
           if (key) body.api_key = apiKey.value.trim();
@@ -545,6 +551,7 @@ export function mountAccountsPage(ctx, route) {
       actions: [
         { label: 'Cancel', value: false },
         { label: 'Import', kind: 'primary', run: async () => {
+          await importer.ready();
           if (!importer.value()) return invalid(importer.text, 'Paste the auth.json or choose the file.');
           await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/import`, { auth_json: importer.value() });
           importer.clear();

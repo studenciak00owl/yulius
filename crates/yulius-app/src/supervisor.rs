@@ -1169,7 +1169,7 @@ impl App {
             if let Ok(Some(task)) = self.deps.store.task(task_id).await
                 && task.harness == Harness::Codex
             {
-                let _ = self.deps.harness.provide_codex().await;
+                let _ = self.deps.harness.provide_codex(true).await;
             }
             let guard = self.supervisor.launch.lock().await;
             let task = self
@@ -1338,7 +1338,8 @@ impl App {
         };
         // The Codex CLI Yulius provides, by its absolute path (SPEC-446 CLI-002).
         let codex_cli = match harness {
-            Harness::Codex => self.deps.harness.provide_codex().await?,
+            // Under the launch lock: only what the install before it left, never a download.
+            Harness::Codex => self.deps.harness.provide_codex(false).await?,
             Harness::ClaudeCode => None,
         };
         let credential = match &codex_home {

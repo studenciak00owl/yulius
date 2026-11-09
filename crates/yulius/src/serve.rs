@@ -506,7 +506,7 @@ fn warm_codex_cli(app: &Arc<App>) {
                 .iter()
                 .any(|a| a.provider == yulius_domain::harness::Provider::OpenAi)
         });
-        if codex && let Err(error) = app.deps.harness.provide_codex().await {
+        if codex && let Err(error) = app.deps.harness.provide_codex(true).await {
             tracing::warn!(%error, "the Codex CLI is not ready; the next Codex start tries again");
         }
     });

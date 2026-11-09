@@ -54,7 +54,7 @@ pub(crate) fn build_full(
     })
 }
 
-fn build_tuned(
+pub(crate) fn build_tuned(
     data: &Path,
     fake: Option<&Path>,
     agent: FakeAgentOptions,

@@ -245,6 +245,68 @@ async fn the_pinned_release_is_installed_once_as_its_own_tree() -> TestResult {
 /// the tarball's) and a smaller unpacked bound.
 type RefusedCase = (&'static str, Vec<u8>, Option<Vec<u8>>, Option<u64>);
 
+/// CLI-001: the release is readable and runnable by every sandbox user whatever the service's
+/// umask (here 077, on a thread with its own): in an isolated sandbox root maps to another user.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_release_is_open_to_sandbox_users_whatever_the_umask() -> TestResult {
+    let tarball = tarball_of(&release_entries())?;
+    let platform = pinned(&tarball)?;
+    let provided = std::thread::spawn(move || -> Result<_, String> {
+        nix::sched::unshare(nix::sched::CloneFlags::CLONE_FS).map_err(|e| e.to_string())?;
+        nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        rt.block_on(async {
+            let s = setup(tarball, false).await.map_err(|e| e.to_string())?;
+            let cli = Arc::new(cli(&s, platform).map_err(|e| e.to_string())?);
+            let provided = cli.ensure().await.map_err(|e| e.to_string())?;
+            Ok((s, provided))
+        })
+    })
+    .join()
+    .map_err(|_| "the umask thread panicked")??;
+    let (s, provided) = provided;
+    for path in [
+        s.root.clone(),
+        provided.dir.clone(),
+        provided.dir.join("bin"),
+        provided.dir.join("codex-path"),
+        provided.dir.join("codex-resources"),
+        provided.program.clone(),
+    ] {
+        assert_eq!(mode(&path)?, 0o755, "{}", path.display());
+    }
+    assert_eq!(mode(&provided.dir.join("codex-package.json"))?, 0o644);
+    Ok(())
+}
+
+/// CLI-001: an earlier release left by a process that ran it at the last install goes once this
+/// process looks again, without a download.
+#[tokio::test]
+async fn an_earlier_release_goes_once_nothing_runs_it() -> TestResult {
+    let tarball = tarball_of(&release_entries())?;
+    let s = setup(tarball.clone(), false).await?;
+    let current = s.root.join("0.167.0-linux-x64/bin");
+    std::fs::create_dir_all(&current)?;
+    std::fs::write(current.join("codex"), elf(62))?;
+    std::fs::create_dir_all(s.root.join("0.160.1-linux-x64/bin"))?;
+    std::fs::write(s.root.join("0.160.1-linux-x64/bin/codex"), elf(62))?;
+    let cli = Arc::new(cli(&s, pinned(&tarball)?)?);
+    cli.ensure().await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while s.root.join("0.160.1-linux-x64").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    assert_eq!(entries(&s.root), ["0.167.0-linux-x64"]);
+    assert_eq!(s.stub.downloads.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 /// CLI-001: a tarball that is not the pinned one, that names a path outside its release or a
 /// link, that holds no binary or one for another machine, or that is too large is refused, and
 /// nothing is left installed or behind.
@@ -298,6 +360,7 @@ async fn a_refused_tarball_installs_nothing() -> TestResult {
         if let Some(max) = max {
             cli = cli.with_max_unpacked(max);
         }
+        let cli = Arc::new(cli);
         let refused = cli.ensure().await;
         assert!(refused.is_err(), "{case}: {refused:?}");
         assert_eq!(cli.installed(), None, "{case}");
@@ -320,7 +383,7 @@ async fn a_refused_tarball_installs_nothing() -> TestResult {
 async fn a_failed_install_is_not_retried_by_every_start() -> TestResult {
     let tarball = tarball_of(&release_entries())?;
     let s = setup(b"not a tarball".to_vec(), false).await?;
-    let cli = cli(&s, pinned(&tarball)?)?;
+    let cli = Arc::new(cli(&s, pinned(&tarball)?)?);
     let first = cli.ensure().await;
     assert!(first.is_err());
     assert_eq!(cli.ensure().await.err(), first.err());
@@ -333,7 +396,11 @@ async fn a_failed_install_is_not_retried_by_every_start() -> TestResult {
     if let Ok(mut served) = s.stub.tarball.lock() {
         *served = tarball;
     }
-    let cli = cli.with_retry_after(Duration::ZERO);
+    let cli = Arc::new(
+        Arc::try_unwrap(cli)
+            .map_err(|_| "shared")?
+            .with_retry_after(Duration::ZERO),
+    );
     let provided = cli.ensure().await?;
     assert!(provided.program.is_file());
     assert_eq!(s.stub.downloads.load(Ordering::SeqCst), 2);
@@ -348,18 +415,18 @@ async fn codex_runs_get_the_provided_cli_or_a_reason() -> TestResult {
     let tarball = tarball_of(&release_entries())?;
     let s = setup(tarball.clone(), false).await?;
     let plain = HarnessAdapter::new("/bin/yulius".into(), "http://127.0.0.1:1");
-    assert_eq!(plain.provide_codex().await?, None);
+    assert_eq!(plain.provide_codex(true).await?, None);
 
     let adapter = HarnessAdapter::new("/bin/yulius".into(), "http://127.0.0.1:1")
         .with_codex_cli(Arc::new(cli(&s, pinned(&tarball)?)?));
-    let provided = adapter.provide_codex().await?.ok_or("provided")?;
+    let provided = adapter.provide_codex(true).await?.ok_or("provided")?;
     assert_eq!(provided.program, s.root.join("0.167.0-linux-x64/bin/codex"));
 
     let broken = setup(b"not a tarball".to_vec(), false).await?;
     let mut failing = HarnessAdapter::new("/bin/yulius".into(), "http://127.0.0.1:1")
         .with_codex_cli(Arc::new(cli(&broken, pinned(&tarball)?)?));
     failing.host_codex = None;
-    match failing.provide_codex().await {
+    match failing.provide_codex(true).await {
         Err(AppError::Upstream(reason)) => {
             assert!(reason.contains("could not be installed"), "{reason}");
             assert!(reason.contains(codex::VERSION), "{reason}");
@@ -367,7 +434,7 @@ async fn codex_runs_get_the_provided_cli_or_a_reason() -> TestResult {
         other => return Err(format!("expected a reason, got {other:?}").into()),
     }
     failing.host_codex = Some("/usr/local/bin/codex".into());
-    assert_eq!(failing.provide_codex().await?, None, "the host's codex");
+    assert_eq!(failing.provide_codex(true).await?, None, "the host's codex");
     Ok(())
 }
 
@@ -377,7 +444,7 @@ async fn codex_runs_get_the_provided_cli_or_a_reason() -> TestResult {
 #[ignore = "downloads 174 MB from registry.npmjs.org"]
 async fn the_real_pinned_release_installs_from_npm() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let cli = CodexCli::new(dir.path().join("codex-cli"))?;
+    let cli = Arc::new(CodexCli::new(dir.path().join("codex-cli"))?);
     let provided = cli.ensure().await?;
     let output = std::process::Command::new(&provided.program)
         .arg("--version")

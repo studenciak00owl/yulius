@@ -160,6 +160,9 @@ pub struct LoginSession {
     writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     phase: Mutex<(LoginPhase, Option<i32>)>,
     cancelled: AtomicBool,
+    /// An imported `auth.json` replaced the account's sign-in: whatever this one holds is not
+    /// stored (SPEC-446 IMP-001).
+    superseded: AtomicBool,
     cancel: Notify,
     /// Notified once the sign-in has ended (its phase is final).
     ended: Notify,
@@ -803,6 +806,11 @@ impl App {
             )),
             (None, Some(auth)) => Some((self.codex_import(auth)?, "auth_json")),
         };
+        // A Codex sign-in needs the Codex CLI: installed before the account exists, so a request
+        // that waits for it and goes away leaves no account without a sign-in (SPEC-446 CLI-002).
+        if immediate.is_none() && provider == Provider::OpenAi {
+            self.deps.harness.provide_codex(true).await?;
+        }
         let store = &self.deps.store;
         let now = self.now();
         let account = AccountRecord {
@@ -1019,6 +1027,7 @@ impl App {
         let sealed = sealed?;
         // A sign-in still running would replace the import when it ends.
         if let Some(active) = self.active_login(&account.id) {
+            active.superseded.store(true, Ordering::SeqCst);
             active.request_cancel();
         }
         let store = &self.deps.store;
@@ -1230,7 +1239,7 @@ impl App {
             Provider::OpenAi => self
                 .deps
                 .harness
-                .provide_codex()
+                .provide_codex(true)
                 .await?
                 .map(|cli| cli.program),
             Provider::Anthropic => None,
@@ -1304,6 +1313,7 @@ impl App {
             writer: tokio::sync::Mutex::new(Some(attached.writer)),
             phase: Mutex::new((LoginPhase::Running, None)),
             cancelled: AtomicBool::new(false),
+            superseded: AtomicBool::new(false),
             cancel: Notify::new(),
             ended: Notify::new(),
             finished_at: AtomicI64::new(0),
@@ -1597,10 +1607,14 @@ impl App {
         };
         let cancelled =
             matches!(ending, Ending::Cancelled) || session.cancelled.load(Ordering::SeqCst);
-        let credential = self
-            .take_credential(session)
-            .map(Secret)
-            .ok_or_else(|| "the sign-in ended without producing a token".to_owned());
+        // Replaced by an import, the sign-in's own credentials are dropped unread.
+        let credential = if session.superseded.load(Ordering::SeqCst) {
+            Err("the sign-in was replaced by an imported auth.json".to_owned())
+        } else {
+            self.take_credential(session)
+                .map(Secret)
+                .ok_or_else(|| "the sign-in ended without producing a token".to_owned())
+        };
         // A cancel that comes after the token was printed still keeps it: the sign-in had
         // succeeded (SPEC-243 LGN-002).
         let result: Option<Result<Secret, String>> = match credential {

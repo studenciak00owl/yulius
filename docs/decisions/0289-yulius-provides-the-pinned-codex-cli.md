@@ -30,8 +30,10 @@ CDX-011, CDX-012); fork task #4. Extends [ADR-0288](0288-fork-codex-returns-as-a
   and renamed into place. No `npm`, no package script, nothing executed on the host. A bump of
   the pin is a code change that checks the harness against the new release.
 - The install runs on the first need: at start when Codex accounts exist, else at the first Codex
-  run or sign-in, outside the launch and sign-in locks; one at a time; a failure answers for a
-  minute before the next try. Earlier pins go once no process runs them.
+  run or sign-in, never under the launch or sign-in locks (under them only what is installed is
+  read), on its own task so a caller that goes away does not cut it short; one at a time; a
+  failure answers for a minute before the next try. Earlier pins go once no process runs them,
+  looked at once per process.
 - Codex runs and Codex sign-ins start `<dir>/bin/codex` by its absolute path; a contained run
   binds `<dir>` read-only at the same path. While the release cannot be installed, a host that
   has its own `codex` uses it; without one the start fails with the reason.
@@ -63,3 +65,9 @@ CDX-011, CDX-012); fork task #4. Extends [ADR-0288](0288-fork-codex-returns-as-a
   token with Yulius: Codex rotates refresh tokens, so one side's copy goes stale. The UI asks for a
   separate `CODEX_HOME`.
 - Other architectures than Linux x86-64 and arm64 get no provided CLI and use the host's `codex`.
+- The fallback looks for `codex` on the host's `PATH`, while a run finds it in its sandbox's
+  system layer: a `codex` added to the host after the sandbox base was built, or installed only
+  inside one sandbox, is not taken into account until the base is rebuilt.
+- A relogin whose start still waits for the Codex CLI is not yet a running sign-in, so an import
+  in that window does not cancel it; every sign-in that has started is cancelled and its
+  credentials dropped.

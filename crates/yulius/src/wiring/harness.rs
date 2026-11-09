@@ -121,12 +121,23 @@ fn mcp_specs(mcp: &[McpAttachment]) -> (Vec<McpServerSpec>, Vec<(String, String)
 }
 
 impl HarnessPort for HarnessAdapter {
-    fn provide_codex(&self) -> ProvideFuture<'_> {
+    fn provide_codex(&self, install: bool) -> ProvideFuture<'_> {
         Box::pin(async move {
             let Some(cli) = &self.codex_cli else {
                 return Ok(None);
             };
-            match cli.ensure().await {
+            let provided = if install {
+                cli.ensure().await
+            } else {
+                cli.ready().and_then(|ready| {
+                    ready.ok_or_else(|| {
+                        crate::wiring::claude_cli::UpdateError(
+                            "it is still being installed; try again in a minute".into(),
+                        )
+                    })
+                })
+            };
+            match provided {
                 Ok(provided) => Ok(Some(provided)),
                 Err(error) if self.host_codex.is_some() => {
                     tracing::warn!(%error, "the Codex CLI could not be installed; runs use the host's codex");

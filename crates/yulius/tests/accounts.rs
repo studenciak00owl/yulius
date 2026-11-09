@@ -705,6 +705,41 @@ async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
     Ok(())
 }
 
+/// SPEC-446 IMP-001: an import wins over a device sign-in running for the account even when that
+/// sign-in has already stored credentials in its temporary home: it is cancelled and its file is
+/// not taken.
+#[tokio::test]
+async fn an_import_is_not_overwritten_by_the_sign_in_it_cancels() -> TestResult {
+    let s = setup().await?;
+    s.host.push(Script {
+        chunks: vec!["Enter this one-time code\n".into()],
+        gated: true,
+        ..Script::default()
+    });
+    let (id, login_id) = create(&s, "openai", "Codex #4").await?;
+    // The device sign-in finished on OpenAI's side and Codex wrote its file.
+    std::fs::write(login_dir(&s, &login_id).join("codex/auth.json"), CODEX_AUTH)?;
+    let auth = imported_auth("SYNTHETIC-import-wins", "2026-11-09T12:00:00Z");
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{id}/import"),
+        Some(json!({"auth_json": auth})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while login_dir(&s, &login_id).exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the sign-in did not end");
+    assert_eq!(stored_credential(&s, &id).await?, auth, "the import stays");
+    Ok(())
+}
+
 /// A ChatGPT `auth.json` like `codex login` writes on a laptop, refreshed at `last_refresh`.
 fn imported_auth(access: &str, last_refresh: &str) -> String {
     format!(

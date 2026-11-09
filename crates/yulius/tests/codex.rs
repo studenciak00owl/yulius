@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::supervision::{
-    build_full, runtime, screen_contains, seed_records, seed_repo, task, wait_for,
+    build_full, build_tuned, runtime, screen_contains, seed_records, seed_repo, task, wait_for,
 };
 use crate::support;
 use crate::support::TestResult;
@@ -529,6 +529,111 @@ fn a_codex_task_starts_the_provided_codex_cli() -> TestResult {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-446 CLI-002, AC-446-3 (Linux): a contained Codex run sees the provided Codex CLI's
+/// directory, bound read-only at its own path, though the rest of the data directory stays hidden.
+/// Skipped with a message where bubblewrap cannot create namespaces.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_contained_codex_run_sees_the_provided_codex_cli() -> TestResult {
+    let probe = std::process::Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    if !probe.as_ref().is_ok_and(|out| out.status.success()) {
+        eprintln!(
+            "SKIPPED a_contained_codex_run_sees_the_provided_codex_cli: bwrap cannot create namespaces"
+        );
+        return Ok(());
+    }
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let fake_dir = fake.parent().ok_or("fake-agent dir")?.to_path_buf();
+    let (_dir, data) = temp()?;
+    let dir = data.join("codex-cli").join("0.167.0-linux-x64");
+    std::fs::create_dir_all(dir.join("bin"))?;
+    std::fs::write(dir.join("bin/codex"), b"provided")?;
+    let agent = FakeAgentOptions {
+        provided_codex: Some(yulius_app::ports::harness::ProvidedCli {
+            program: dir.join("bin/codex"),
+            dir: dir.clone(),
+        }),
+        ..FakeAgentOptions::default()
+    };
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_tuned(&data, Some(&fake), agent, move |c| {
+            c.contained = true;
+            c.contained_readonly = vec![fake_dir];
+        })?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_codex_task(&app, &sandbox, &user, "Codex contained").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        for (path, expected) in [
+            (dir.join("bin/codex"), "READ codex OK"),
+            (data.join("yulius.db"), "READ yulius.db ERR"),
+        ] {
+            app.send_input(&id, format!("/read {}\r", path.display()).as_bytes())
+                .await?;
+            wait_for(expected, Duration::from_secs(10), || {
+                screen_contains(&app, &id, expected)
+            })
+            .await?;
+        }
+        crate::support::stop_tasks(&app, &[&id]).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-446 CLI-002: a Codex CLI that cannot be provided fails the start (its reason goes to the
+/// terminal's "Could not start" notice) before anything is spawned, instead of a run that dies
+/// with `codex: not found`.
+#[test]
+fn a_codex_start_without_a_codex_cli_says_why() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = FakeAgentOptions {
+        codex_unavailable: Some("the Codex CLI 0.167.0 could not be installed (offline)".into()),
+        ..FakeAgentOptions::default()
+    };
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_codex_task(&app, &sandbox, &user, "Codex offline").await?;
+        wait_for("the failed start", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| matches!(t.status, TaskStatus::Failed(_)))
+        })
+        .await?;
+        assert!(app.deps.store.live_attempt(&id).await?.is_none(), "no run");
+        assert!(
+            app.deps.store.attempts(&id).await?.is_empty(),
+            "nothing was spawned"
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

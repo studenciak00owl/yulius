@@ -119,6 +119,8 @@ pub struct FakeAgentOptions {
     /// The Codex CLI the harness says it provides (SPEC-446 CLI-002); its program is recorded in
     /// `fake-launch.txt`, the fake agent runs instead.
     pub provided_codex: Option<yulius_app::ports::harness::ProvidedCli>,
+    /// The Codex CLI cannot be provided, for this reason (SPEC-446 CLI-002).
+    pub codex_unavailable: Option<String>,
 }
 
 /// See the module docs.
@@ -143,9 +145,15 @@ impl FakeAgentHarness {
 }
 
 impl HarnessPort for FakeAgentHarness {
-    fn provide_codex(&self) -> yulius_app::ports::harness::ProvideFuture<'_> {
+    fn provide_codex(&self, _install: bool) -> yulius_app::ports::harness::ProvideFuture<'_> {
         let provided = self.options.provided_codex.clone();
-        Box::pin(async move { Ok(provided) })
+        let unavailable = self.options.codex_unavailable.clone();
+        Box::pin(async move {
+            match unavailable {
+                Some(reason) => Err(yulius_app::error::AppError::Upstream(reason)),
+                None => Ok(provided),
+            }
+        })
     }
 
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {

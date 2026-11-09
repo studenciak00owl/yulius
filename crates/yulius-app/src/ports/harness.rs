@@ -298,12 +298,15 @@ pub type ProvideFuture<'a> = std::pin::Pin<
 
 /// Harness operations.
 pub trait HarnessPort: Send + Sync {
-    /// The Codex CLI Codex runs and sign-ins start, installed first when needed (SPEC-446
-    /// CLI-002); `None`: the `codex` on the run's `PATH`.
+    /// The Codex CLI Codex runs and sign-ins start (SPEC-446 CLI-002), installed first when
+    /// `install` (else only what is ready: a caller holding a lock never waits for a download);
+    /// `None`: the `codex` on the run's `PATH`.
     ///
     /// # Errors
-    /// `Upstream` when the pinned CLI cannot be installed and the host has no `codex` either.
-    fn provide_codex(&self) -> ProvideFuture<'_> {
+    /// `Upstream` when the pinned CLI cannot be installed (or, without `install`, is not
+    /// installed yet) and the host has no `codex` either.
+    fn provide_codex(&self, install: bool) -> ProvideFuture<'_> {
+        let _ = install;
         Box::pin(async { Ok(None) })
     }
     /// Plans a launch.

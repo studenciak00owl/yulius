@@ -16,6 +16,7 @@
 //! Installs are one at a time: callers wait for the one under way.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use sha2::{Digest, Sha512};
@@ -59,6 +60,8 @@ pub struct CodexCli {
     /// The last failed install: when, and why.
     failed: std::sync::Mutex<Option<(std::time::Instant, UpdateError)>>,
     retry_after: Duration,
+    /// Earlier releases were looked at by this process.
+    pruned: std::sync::atomic::AtomicBool,
 }
 
 impl CodexCli {
@@ -98,6 +101,7 @@ impl CodexCli {
             max_unpacked: MAX_UNPACKED,
             installing: tokio::sync::Mutex::new(()),
             failed: std::sync::Mutex::new(None),
+            pruned: std::sync::atomic::AtomicBool::new(false),
             retry_after: RETRY_AFTER,
         })
     }
@@ -133,15 +137,55 @@ impl CodexCli {
             .then_some(ProvidedCli { program, dir })
     }
 
-    /// The pinned release, installed first when it is not there yet.
+    /// What a caller that must not wait gets: the installed release, the last failed install's
+    /// reason while it is recent, or `None` when no install was tried yet.
+    ///
+    /// # Errors
+    /// The recent failure.
+    pub fn ready(&self) -> Result<Option<ProvidedCli>, UpdateError> {
+        if let Some(provided) = self.installed() {
+            return Ok(Some(provided));
+        }
+        if let Ok(failed) = self.failed.lock()
+            && let Some((at, why)) = failed.as_ref()
+            && at.elapsed() < self.retry_after
+        {
+            return Err(why.clone());
+        }
+        Ok(None)
+    }
+
+    /// The pinned release, installed first when it is not there yet. The install runs on its
+    /// own task: a caller that goes away (a closed request) does not cut it short.
     ///
     /// # Errors
     /// No package for this platform, or the download or its checks failed; nothing is left
     /// installed then.
-    pub async fn ensure(&self) -> Result<ProvidedCli, UpdateError> {
+    pub async fn ensure(self: &Arc<Self>) -> Result<ProvidedCli, UpdateError> {
         if let Some(provided) = self.installed() {
+            self.prune_once();
             return Ok(provided);
         }
+        let me = Arc::clone(self);
+        tokio::spawn(async move { me.ensure_now().await })
+            .await
+            .map_err(|e| UpdateError(format!("the Codex CLI install stopped: {e}")))?
+    }
+
+    /// Looks once per process for earlier releases to remove (one still running at the last
+    /// install stays until then).
+    fn prune_once(self: &Arc<Self>) {
+        let Some(platform) = self.platform else {
+            return;
+        };
+        if self.pruned.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let me = Arc::clone(self);
+        tokio::spawn(async move { me.remove_others(platform).await });
+    }
+
+    async fn ensure_now(&self) -> Result<ProvidedCli, UpdateError> {
         let Some(platform) = self.platform else {
             return fail(format!(
                 "Yulius provides no Codex CLI for {} {}",
@@ -151,14 +195,8 @@ impl CodexCli {
         };
         let _one = self.installing.lock().await;
         // Another caller may have installed it while this one waited, or just failed to.
-        if let Some(provided) = self.installed() {
+        if let Some(provided) = self.ready()? {
             return Ok(provided);
-        }
-        if let Ok(failed) = self.failed.lock()
-            && let Some((at, why)) = failed.as_ref()
-            && at.elapsed() < self.retry_after
-        {
-            return Err(why.clone());
         }
         let result = self.install_now(platform).await;
         if let Ok(mut failed) = self.failed.lock() {
@@ -181,6 +219,7 @@ impl CodexCli {
         let _ = tokio::fs::remove_dir_all(&staging).await;
         installed?;
         self.remove_others(platform).await;
+        self.pruned.store(true, std::sync::atomic::Ordering::SeqCst);
         self.installed()
             .ok_or_else(|| UpdateError("the installed Codex CLI is not in place".into()))
     }
@@ -385,6 +424,8 @@ fn unpack(tarball: &Path, to: &Path, platform: &Platform, max: u64) -> Result<()
             .map_err(write)?;
         out.sync_all().map_err(write)?;
     }
+    // The builder's mode passed through the umask; every sandbox user enters these.
+    open_dirs(to).map_err(write)?;
     let program = to.join(codex::BINARY);
     let mut header = [0u8; 20];
     let read = std::fs::symlink_metadata(&program)
@@ -404,6 +445,19 @@ fn unpack(tarball: &Path, to: &Path, platform: &Platform, max: u64) -> Result<()
             "the Codex CLI is not a 64-bit ELF for machine {}",
             platform.machine
         ));
+    }
+    Ok(())
+}
+
+/// Sets every directory below `dir` (itself included) to 0755; links are not followed.
+fn open_dirs(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))?;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            open_dirs(&entry.path())?;
+        }
     }
     Ok(())
 }
