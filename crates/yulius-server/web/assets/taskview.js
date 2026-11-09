@@ -18,7 +18,7 @@ import { mentionOf, parsePrompt } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
-import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
+import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
 import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
@@ -1643,10 +1643,7 @@ export function mountComposer(ctx, sandbox) {
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
     const found = findModel(modelId);
-    if (found) {
-      body.model = found.model.id;
-      if (found.provider.harness !== 'claude') body.harness = found.provider.harness;
-    }
+    Object.assign(body, modelFields(modelId));
     if (effortId && !(found && found.model.effort === false)) body.effort = effortId;
     return body;
   }

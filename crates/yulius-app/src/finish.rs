@@ -179,6 +179,7 @@ impl TranscriptFacts {
             }
             Observation::LimitReached { .. } => self.limit_pending = true,
             Observation::Session { .. }
+            | Observation::RateLimits(_)
             | Observation::CompactFailed
             | Observation::BackgroundStarted { .. }
             | Observation::BackgroundEnded { .. }

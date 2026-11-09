@@ -1,12 +1,12 @@
 //! Harness port: launch planning, transcript observation and login helpers for Claude Code
-//! (SPEC-002 §7.2). Implemented over `yulius-harness`.
+//! (SPEC-002 §7.2) and Codex (SPEC-445). Implemented over `yulius-harness`.
 
 use std::path::{Path, PathBuf};
 
 use yulius_domain::harness::Harness;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
+use yulius_domain::usage::{AccountUsage, TokenUsage};
 
 use crate::error::AppResult;
 use crate::model::Secret;
@@ -80,8 +80,10 @@ pub struct HarnessLaunch {
     pub contained: bool,
     /// Extra MCP servers.
     pub mcp: Vec<McpAttachment>,
-    /// Provider credential (the Claude OAuth token).
+    /// Provider credential (the Claude OAuth token, or the Codex `auth.json` text).
     pub credential: Secret,
+    /// Codex home of the (sandbox, account) pair; required for Codex (SPEC-445 CDX-003).
+    pub codex_home: Option<PathBuf>,
 }
 
 /// A user's Cockpit launch (SPEC-021): plain Claude Code outside any task.
@@ -207,6 +209,9 @@ pub enum Observation {
     Compacted,
     /// A compaction failed.
     CompactFailed,
+    /// The provider's rate-limit windows of the run's account, as the CLI recorded them (Codex
+    /// `token_count` events, SPEC-445 CDX-004).
+    RateLimits(AccountUsage),
     /// The provider reported a usage limit.
     LimitReached {
         /// Reset time if known.
@@ -340,6 +345,34 @@ pub trait HarnessPort: Send + Sync {
         from: WatchFrom,
         until: Option<Timestamp>,
     ) -> AppResult<Option<UsageSnapshot>>;
+    /// The rollout of the Codex session `session_id` below `sessions_dir` (SPEC-445 CDX-003).
+    ///
+    /// # Errors
+    /// I/O failures; an invalid session id.
+    fn find_codex_rollout(
+        &self,
+        sessions_dir: &Path,
+        session_id: &str,
+    ) -> AppResult<Option<PathBuf>>;
+    /// The id and rollout of the Codex session started for `worktree` at or after `since`, read
+    /// from the `session_meta` of the newest rollouts below `sessions_dir` (when no hook named it).
+    ///
+    /// # Errors
+    /// I/O failures.
+    fn discover_codex_session(
+        &self,
+        sessions_dir: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> AppResult<Option<(String, PathBuf)>>;
+    /// Why a Codex `auth.json` is not a usable credential, `None` when it is (SPEC-445 CDX-005).
+    fn codex_auth_problem(&self, auth_json: &[u8]) -> Option<String>;
+    /// The `auth.json` of an OpenAI API key, `None` when the key is not one.
+    fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>>;
+    /// Whether the Codex `auth.json` `a` was refreshed after `b` (SPEC-445 CDX-006).
+    fn codex_auth_newer(&self, a: &[u8], b: &[u8]) -> bool;
+    /// The `config.toml` of a Codex home Yulius prepares for a sign-in: credentials in a file.
+    fn codex_login_config(&self) -> Vec<u8>;
     /// Login command for a provider account.
     fn login_argv(&self, harness: Harness) -> Vec<String>;
     /// Extracts a Claude OAuth token from login output.

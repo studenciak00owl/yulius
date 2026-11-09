@@ -51,6 +51,9 @@ struct Script {
     exit: Option<i32>,
     /// Wait for [`FakeHost::release`] before emitting anything.
     gated: bool,
+    /// Files the process writes below its run directory after its output, before it exits
+    /// (Codex stores its sign-in in `codex/auth.json`).
+    writes: Vec<(String, String)>,
 }
 
 struct Run {
@@ -221,6 +224,7 @@ impl SessionHost for FakeHost {
         let emitter_tx = tx.clone();
         let emitter_exited = exited.clone();
         let release = self.release.clone();
+        let emitter_dir = run_dir.to_path_buf();
         tokio::spawn(async move {
             if script.gated {
                 let Ok(permit) = release.acquire().await else {
@@ -236,6 +240,9 @@ impl SessionHost for FakeHost {
                 if emitter_tx.send(event).await.is_err() {
                     return;
                 }
+            }
+            for (path, contents) in &script.writes {
+                let _ = std::fs::write(emitter_dir.join(path), contents);
             }
             if let Some(code) = script.exit
                 && !emitter_exited.swap(true, Ordering::SeqCst)
@@ -385,6 +392,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
         ],
         exit: Some(0),
         gated: true,
+        writes: Vec::new(),
     });
     let mut events = s.h.app.events.subscribe();
     let (account_id, login_id) = create(&s, "anthropic", "Claude #1").await?;
@@ -478,24 +486,177 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     Ok(())
 }
 
+/// A synthetic Codex `auth.json` of a ChatGPT sign-in.
+const CODEX_AUTH: &str = r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-codex-access","refresh_token":"SYNTHETIC-codex-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-09T10:00:00Z"}"#;
+
+/// The stored credential of `account`, opened.
+async fn stored_credential(s: &Setup, account: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let id = AccountId::parse(account)?;
+    let sealed =
+        s.h.store
+            .account(&id)
+            .await?
+            .ok_or("account")?
+            .credential
+            .ok_or("credential")?;
+    Ok(String::from_utf8(s.h.app.deps.crypto.open(&sealed)?)?)
+}
+
+/// SPEC-445 CDX-005: a Codex account signs in with `codex login --device-auth` in a temporary
+/// Codex home that keeps its credentials in a file; viewers see the device code, and the
+/// `auth.json` it wrote is sealed into the account.
 #[tokio::test]
-async fn only_claude_accounts_can_be_added() -> TestResult {
+async fn codex_device_login_seals_the_auth_file() -> TestResult {
     let s = setup().await?;
-    let refused = call(
+    s.host.push(Script {
+        chunks: vec![
+            "\nWelcome to Codex [v\u{1b}[90m0.167.0\u{1b}[0m]\n".into(),
+            "1. Open this link in your browser and sign in to your account\n   \u{1b}[94mhttps://auth.openai.com/codex/device\u{1b}[0m\n\n".into(),
+            "2. Enter this one-time code \u{1b}[90m(expires in 15 minutes)\u{1b}[0m\n   \u{1b}[94mABCD-EFGHI\u{1b}[0m\n".into(),
+        ],
+        writes: vec![("codex/auth.json".into(), CODEX_AUTH.into())],
+        exit: Some(0),
+        gated: true,
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, login_id) = create(&s, "openai", "Codex #1").await?;
+    let plans = s.host.plans();
+    let (run_dir, plan, _) = plans.first().ok_or("spawned")?;
+    assert_eq!(plan.argv, ["codex", "login", "--device-auth"]);
+    let home = login_dir(&s, &login_id).join("codex");
+    assert!(
+        plan.env
+            .iter()
+            .any(|(k, v)| k == "CODEX_HOME" && Path::new(v) == home),
+        "{:?}",
+        plan.env
+    );
+    let config = plan
+        .files
+        .iter()
+        .find(|f| f.path == home.join("config.toml"))
+        .ok_or("config.toml")?;
+    assert_eq!(config.contents, b"cli_auth_credentials_store = \"file\"\n");
+    assert_eq!(config.mode, 0o600);
+    assert_eq!(*run_dir, login_dir(&s, &login_id));
+
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let terminal = s.h.app.login_terminal(&ctx, &login_id)?;
+    let mut sub = terminal.subscribe();
+    s.host.release.add_permits(1);
+    // The device code is for the person signing in: it is shown, not masked.
+    let (shown, status, _) = viewer_output(&mut sub).await?;
+    terminal.unsubscribe();
+    assert!(shown.contains("ABCD-EFGHI"), "{shown}");
+    assert_eq!(status, "ok");
+    let settled = account_settled(&mut events, &account_id).await?;
+    assert_eq!(settled["status"], "ok", "{settled}");
+    assert_eq!(stored_credential(&s, &account_id).await?, CODEX_AUTH);
+    assert!(
+        !login_dir(&s, &login_id).exists(),
+        "the temporary home is wiped"
+    );
+    Ok(())
+}
+
+/// SPEC-445 CDX-005: a Codex sign-in that stored no usable credentials fails the account.
+#[tokio::test]
+async fn a_codex_login_without_credentials_fails() -> TestResult {
+    let s = setup().await?;
+    s.host.push(Script {
+        chunks: vec!["Error: device code expired\n".into()],
+        writes: vec![("codex/auth.json".into(), r#"{"tokens":{}}"#.into())],
+        exit: Some(1),
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, _) = create(&s, "openai", "Codex #2").await?;
+    let failed = account_settled(&mut events, &account_id).await?;
+    assert_eq!(failed["status"], "error", "{failed}");
+    assert!(
+        s.h.store
+            .account(&AccountId::parse(&account_id)?)
+            .await?
+            .ok_or("account")?
+            .credential
+            .is_none()
+    );
+    Ok(())
+}
+
+/// SPEC-445 CDX-005: an OpenAI API key makes a Codex account at once, without a sign-in; it is
+/// sealed as the `auth.json` Codex writes for it and never returned. A key that is not one, a key
+/// for a Claude account and an unknown provider are refused.
+#[tokio::test]
+async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
+    let s = setup().await?;
+    let key = "sk-proj-SYNTHETIC0123456789abcdefghij";
+    let r = call(
         &s.h.router,
         Method::POST,
         "/api/admin/accounts",
-        Some(json!({"provider": "openai", "label": "Codex"})),
+        Some(json!({"provider": "openai", "label": "Codex key", "api_key": key})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.body["account"]["status"], "ok");
+    assert_eq!(r.body["account"]["provider"], "openai");
+    assert!(r.body.get("login_id").is_none(), "{}", r.body);
+    assert!(
+        !r.body.to_string().contains(key),
+        "the key is never returned"
+    );
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
+    let id = r.body["account"]["id"].as_str().ok_or("id")?;
+    let stored: Value = serde_json::from_str(&stored_credential(&s, id).await?)?;
+    assert_eq!(stored["auth_mode"], "apikey");
+    assert_eq!(stored["OPENAI_API_KEY"], key);
+    let listed = call(
+        &s.h.router,
+        Method::GET,
+        "/api/admin/accounts",
+        None,
+        &s.admin,
+    )
+    .await?;
+    assert!(!listed.body.to_string().contains(key));
+
+    for body in [
+        json!({"provider": "openai", "label": "Bad key", "api_key": "not-a-key"}),
+        json!({"provider": "anthropic", "label": "Claude key", "api_key": key}),
+        json!({"provider": "google", "label": "Gemini"}),
+    ] {
+        let refused = call(
+            &s.h.router,
+            Method::POST,
+            "/api/admin/accounts",
+            Some(body.clone()),
+            &s.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert!(!refused.body.to_string().contains(key));
+    }
+    let after = call(
+        &s.h.router,
+        Method::GET,
+        "/api/admin/accounts",
+        None,
         &s.admin,
     )
     .await?;
     assert_eq!(
-        refused.status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        after.body.as_array().map(Vec::len),
+        Some(1),
         "{}",
-        refused.body
+        after.body
     );
-    assert!(s.host.plans().is_empty(), "no login was started");
     Ok(())
 }
 
@@ -1060,6 +1221,7 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
         ],
         exit: Some(0),
         gated: true,
+        writes: Vec::new(),
     });
     let (_, login_id) = create(&s, "anthropic", "Claude WS").await?;
 

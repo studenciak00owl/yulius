@@ -1,4 +1,4 @@
-//! Launch plans for Claude Code sessions (SPEC-002 §7.2, ADR-05, ADR-07).
+//! Launch plans for Claude Code and Codex sessions (SPEC-002 §7.2, ADR-05, ADR-07; SPEC-445).
 //!
 //! [`plan_launch`] is pure: it turns a [`LaunchRequest`] into the argv, environment and config
 //! files of one run. The caller (supervisor) writes [`LaunchPlan::files`], adds the common
@@ -15,11 +15,21 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 use yulius_domain::harness::Harness;
 
+use crate::json::{toml_string, toml_string_array};
 use crate::paths::valid_session_id;
 use crate::secret::Secret;
 
 /// Claude Code executable name (resolved through `PATH` by the spawner).
 pub const CLAUDE_PROGRAM: &str = "claude";
+/// Codex CLI executable name (resolved through `PATH` by the spawner).
+pub const CODEX_PROGRAM: &str = "codex";
+/// Hook events registered for Codex (SPEC-445 CDX-007): the same turn boundaries as Claude Code's.
+pub const CODEX_HOOK_EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"];
+/// The prompt a Codex session resumed after a usage limit gets: Codex has no way to continue the
+/// cut turn by itself.
+pub const CODEX_CONTINUE_PROMPT: &str = "Continue from where you left off.";
+/// Codex caps the timeout of its `SessionEnd` hook at 3 s (0.167).
+pub const CODEX_SESSION_END_TIMEOUT_SECONDS: u64 = 3;
 /// Environment variable holding the per-attempt Yulius bearer token (set by the supervisor).
 pub const TASK_TOKEN_ENV: &str = "YULIUS_TASK_TOKEN";
 /// Environment variable holding the internal Yulius listener URL.
@@ -148,6 +158,8 @@ pub struct McpServerSpec {
 pub enum Credential {
     /// Claude long-lived OAuth token from `claude setup-token`.
     ClaudeOauthToken(Secret<String>),
+    /// Contents of a Codex `auth.json` (SPEC-445 CDX-005).
+    CodexAuthJson(Secret<Vec<u8>>),
 }
 
 /// Everything needed to plan one run.
@@ -163,6 +175,8 @@ pub struct LaunchRequest {
     pub sandbox_home: PathBuf,
     /// Run directory for generated config files.
     pub run_dir: PathBuf,
+    /// Codex home of the (sandbox, account) pair; required for Codex (SPEC-445 CDX-003).
+    pub codex_home: Option<PathBuf>,
     /// Model override.
     pub model: Option<String>,
     /// Reasoning effort override.
@@ -274,6 +288,12 @@ impl fmt::Debug for LaunchPlan {
 /// A request that cannot be planned. Messages name the field, never its value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LaunchError {
+    /// The credential kind does not belong to the harness.
+    #[error("credential does not match harness {0}")]
+    CredentialMismatch(Harness),
+    /// Codex needs a `CODEX_HOME`.
+    #[error("codex launch requires codex_home")]
+    MissingCodexHome,
     /// A path that must appear in argv or config is not valid UTF-8.
     #[error("path {0} is not valid UTF-8")]
     NonUtf8Path(&'static str),
@@ -411,6 +431,7 @@ pub fn plan_launch(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     validate(request)?;
     match request.harness {
         Harness::ClaudeCode => plan_claude(request),
+        Harness::Codex => plan_codex(request),
     }
 }
 
@@ -481,7 +502,9 @@ fn push_prompt(argv: &mut Vec<String>, prompt: Option<&str>) {
 }
 
 fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
-    let Credential::ClaudeOauthToken(token) = &request.credential;
+    let Credential::ClaudeOauthToken(token) = &request.credential else {
+        return Err(LaunchError::CredentialMismatch(request.harness));
+    };
     check(
         !token.expose().is_empty() && !token.expose().contains(['\0', '\n', '\r']),
         "credential",
@@ -652,6 +675,190 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     })
 }
 
+/// The `config.toml` Yulius writes into a Codex home before each run: credentials stay in its
+/// `auth.json` (the vault's copy, written back after the run), and Codex neither checks for
+/// updates (the operator installs it, #45) nor asks to trust the worktree.
+fn codex_config(worktree: &str) -> Vec<u8> {
+    format!(
+        "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n\n[projects.{}]\ntrust_level = \"trusted\"\n",
+        toml_string(worktree)
+    )
+    .into_bytes()
+}
+
+fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
+    let Credential::CodexAuthJson(auth) = &request.credential else {
+        return Err(LaunchError::CredentialMismatch(request.harness));
+    };
+    check(!auth.expose().is_empty(), "credential")?;
+    let codex_home = request
+        .codex_home
+        .as_ref()
+        .ok_or(LaunchError::MissingCodexHome)?;
+    let worktree = utf8(&request.worktree, "worktree")?;
+
+    // The same hook client as Claude Code's (`yulius hook codex <event>`); the turn boundaries may
+    // be held while no subscription has capacity (ADR-17).
+    // Codex waits for its Stop and UserPromptSubmit hooks with no upper bound on `timeout`, and
+    // ignores a hook that fails or times out (0.167).
+    let mut hooks = Map::new();
+    for event in CODEX_HOOK_EVENTS {
+        let timeout = if CLAUDE_HELD_HOOK_EVENTS.contains(&event) {
+            CLAUDE_HELD_HOOK_TIMEOUT_SECONDS
+        } else if event == "SessionEnd" {
+            CODEX_SESSION_END_TIMEOUT_SECONDS
+        } else {
+            CLAUDE_HOOK_TIMEOUT_SECONDS
+        };
+        hooks.insert(
+            event.to_owned(),
+            json!([{ "hooks": [{
+                "type": "command",
+                "command": hook_command(request, "codex", event)?,
+                "timeout": timeout
+            }] }]),
+        );
+    }
+    // A shell command that waits on or kills itself is refused before it runs, as for Claude Code;
+    // Codex names its shell tool `Bash` with the command in `tool_input.command` (0.167). Its file
+    // edits are `apply_patch`, which Yulius's edit gate does not read.
+    hooks.insert(
+        "PreToolUse".to_owned(),
+        json!([{ "matcher": "^Bash$", "hooks": [{
+            "type": "command",
+            "command": hook_command(request, "codex", "PreToolUse")?,
+            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+        }] }]),
+    );
+    let hooks_json = json!({ "hooks": hooks });
+
+    // `--no-daemon`: the session stays inside the process Yulius spawned and supervises; Codex
+    // otherwise may run it in a shared background server (0.167 `daemon_auto_start`).
+    let mut argv = vec![
+        CODEX_PROGRAM.to_owned(),
+        "--no-daemon".into(),
+        "-C".into(),
+        worktree.to_owned(),
+    ];
+    let mut config = |key: &str, value: String| {
+        argv.extend(["-c".into(), format!("{key}={value}")]);
+    };
+    // Yulius's own tools through the `yulius mcp` stdio bridge, as Claude Code gets them
+    // (SPEC-358): its URL and the run's token come from the run environment by name.
+    let yulius_key = format!("mcp_servers.{YULIUS_MCP_NAME}");
+    config(
+        &format!("{yulius_key}.command"),
+        toml_string(utf8(&request.yulius_exe, "yulius_exe")?),
+    );
+    config(&format!("{yulius_key}.args"), toml_string_array(&["mcp"]));
+    config(
+        &format!("{yulius_key}.env_vars"),
+        toml_string_array(&[YULIUS_URL_ENV, TASK_TOKEN_ENV]),
+    );
+    for server in &request.mcp_servers {
+        let key = format!("mcp_servers.{}", server.name);
+        match &server.transport {
+            McpTransport::Stdio {
+                command,
+                args,
+                env_vars,
+            } if env_vars.is_empty() => {
+                config(&format!("{key}.command"), toml_string(command));
+                config(&format!("{key}.args"), toml_string_array(args));
+            }
+            // Codex passes a server only variables of its own name: a shell gives each one the
+            // run variable holding its value. Names are checked, and the command and its
+            // arguments are the shell's arguments, never its script.
+            McpTransport::Stdio {
+                command,
+                args,
+                env_vars,
+            } => {
+                let exports: Vec<String> = env_vars
+                    .iter()
+                    .map(|(name, var)| format!("{name}=\"${var}\""))
+                    .collect();
+                let script = format!("export {}; exec \"$@\"", exports.join(" "));
+                let mut shell_args = vec![script, format!("mcp-{}", server.name), command.clone()];
+                shell_args.extend(args.iter().cloned());
+                config(&format!("{key}.command"), toml_string("sh"));
+                config(&format!("{key}.args"), toml_string_array(&shell_args));
+                let vars: Vec<&str> = env_vars.iter().map(|(_, var)| var.as_str()).collect();
+                config(&format!("{key}.env_vars"), toml_string_array(&vars));
+            }
+            McpTransport::Http { url, bearer_env } => {
+                config(&format!("{key}.url"), toml_string(url));
+                if let Some(name) = bearer_env {
+                    config(&format!("{key}.bearer_token_env_var"), toml_string(name));
+                }
+            }
+        }
+    }
+    if let Some(effort) = &request.effort {
+        config("model_reasoning_effort", toml_string(effort));
+    }
+    if let Some(model) = &request.model {
+        argv.extend(["-m".into(), model.clone()]);
+    }
+    if request.contained {
+        argv.push("--dangerously-bypass-approvals-and-sandbox".into());
+    }
+    // Yulius writes the hooks itself, before every run: they need no trust a person grants.
+    argv.push("--dangerously-bypass-hook-trust".into());
+    let (session_id, prompt) = match &request.mode {
+        LaunchMode::New { prompt, .. } => (None, prompt.clone()),
+        LaunchMode::Resume {
+            session_id,
+            prompt,
+            continue_interrupted,
+        } => {
+            argv.extend(["resume".into(), session_id.clone()]);
+            let prompt = if *continue_interrupted {
+                Some(CODEX_CONTINUE_PROMPT.to_owned())
+            } else {
+                prompt.clone()
+            };
+            (Some(session_id.clone()), prompt)
+        }
+    };
+    push_prompt(&mut argv, prompt.as_deref());
+
+    Ok(LaunchPlan {
+        argv,
+        cwd: request.worktree.clone(),
+        env: vec![
+            (
+                "CODEX_HOME".into(),
+                utf8(codex_home, "codex_home")?.to_owned(),
+            ),
+            (YULIUS_URL_ENV.into(), base_url(request).to_owned()),
+            (TASK_WORKTREE_ENV.into(), worktree.to_owned()),
+            (TMPDIR_ENV.0.into(), TMPDIR_ENV.1.into()),
+        ],
+        secret_env: Vec::new(),
+        files: vec![
+            PlannedFile {
+                path: codex_home.join("auth.json"),
+                contents: auth.expose().clone(),
+                mode: PRIVATE_FILE_MODE,
+            },
+            PlannedFile {
+                path: codex_home.join("config.toml"),
+                contents: codex_config(worktree),
+                mode: PRIVATE_FILE_MODE,
+            },
+            PlannedFile {
+                path: codex_home.join("hooks.json"),
+                contents: pretty(&hooks_json),
+                mode: PRIVATE_FILE_MODE,
+            },
+        ],
+        // Codex names its own session (no `--session-id`): a new one is learnt from its hook or
+        // its rollout.
+        session_id,
+    })
+}
+
 /// A user's Cockpit (SPEC-021): a plain Claude Code session outside any task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CockpitRequest {
@@ -732,7 +939,9 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 13] = [
 /// [`LaunchError`] for a non-UTF-8 config dir or executable, an unsafe session id, credential,
 /// URL or token, or an MCP server a task run could not have.
 pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError> {
-    let Credential::ClaudeOauthToken(token) = &request.credential;
+    let Credential::ClaudeOauthToken(token) = &request.credential else {
+        return Err(LaunchError::CredentialMismatch(Harness::ClaudeCode));
+    };
     check(
         !token.expose().is_empty() && !token.expose().contains(['\0', '\n', '\r']),
         "credential",

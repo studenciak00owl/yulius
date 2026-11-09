@@ -2,8 +2,10 @@
 //! (SPEC-001 ROT-001/002/009, ACC-009; SPEC-002 ADR-05, ADR-17, §7.2 "Login", §8). There are no
 //! priorities or switches to manage: the pool policy decides (F 2026-10-10).
 //!
-//! Each login runs the provider CLI's own sign-in (`claude setup-token`) in a server-owned PTY through the process host, with a temporary config
-//! directory under `<data_dir>/logins/<login_id>/`. Viewers (instance administrators) watch it
+//! Each login runs the provider CLI's own sign-in (`claude setup-token`, or `codex login
+//! --device-auth` for a Codex account, SPEC-445 CDX-005) in a server-owned PTY through the process
+//! host, with a temporary config directory under `<data_dir>/logins/<login_id>/`. A Codex account
+//! may instead be given an OpenAI API key, which becomes its `auth.json` without a sign-in. Viewers (instance administrators) watch it
 //! through a [`Hub`]; every output chunk passes through the harness masker first, so a Claude
 //! token never reaches a browser. A bounded copy of the raw output is kept in memory for token
 //! extraction. On exit the credential is sealed into the account, the temporary directory is
@@ -40,7 +42,8 @@ use crate::hub::{Hub, Subscription};
 use crate::model::{AccountRecord, AccountStatus, AttemptRecord, Secret};
 use crate::ports::harness::OutputMasker;
 use crate::ports::session::{
-    Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWriter,
+    Containment, LaunchPlan, PlannedFile, RunEvent, RunExit, RunInspection, RunReader, RunSignal,
+    RunWriter,
 };
 use crate::ports::usage::{UsageFailure, UsageFailureKind};
 use crate::usage_json;
@@ -768,9 +771,22 @@ impl App {
         req: &CreateAccount,
     ) -> AppResult<AccountLoginStarted> {
         self.require_instance_admin(ctx)?;
-        let provider = Provider::parse(req.provider.trim())
-            .map_err(|_| AppError::Invalid("provider must be anthropic (Claude)".into()))?;
+        let provider = Provider::parse(req.provider.trim()).map_err(|_| {
+            AppError::Invalid("provider must be anthropic (Claude) or openai (Codex)".into())
+        })?;
         let label = validate_label(&req.label)?;
+        // An API key is a Codex account's credential at once: no sign-in runs (CDX-005).
+        let api_key_auth = match req.api_key.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(_) if provider != Provider::OpenAi => {
+                return Err(AppError::Invalid(
+                    "an API key is only for an openai (Codex) account".into(),
+                ));
+            }
+            Some(key) => Some(self.deps.harness.codex_api_key_auth(key).ok_or_else(|| {
+                AppError::Invalid("the API key is not an OpenAI API key (sk-…)".into())
+            })?),
+        };
         let store = &self.deps.store;
         let now = self.now();
         let account = AccountRecord {
@@ -787,6 +803,42 @@ impl App {
             email_checked_at: None,
         };
         store.insert_account(&account).await?;
+        if let Some(mut auth) = api_key_auth {
+            let sealed = self.deps.crypto.seal(&auth);
+            auth.zeroize();
+            let stored = match sealed {
+                Ok(sealed) => {
+                    store
+                        .set_account_credential(&account.id, &sealed, AccountStatus::Ok, now)
+                        .await
+                }
+                Err(err) => Err(err),
+            };
+            if let Err(err) = stored {
+                store.delete_account(&account.id).await?;
+                return Err(err);
+            }
+            store
+                .audit(
+                    now,
+                    &actor(ctx),
+                    "account.created",
+                    Some(account.id.as_str()),
+                    Some(&format!(
+                        "provider={} label={label} api_key",
+                        provider.as_str()
+                    )),
+                )
+                .await?;
+            let account = self.load_account(account.id.as_str()).await?;
+            let view = account_view(&account, &[]);
+            self.publish_account(view.clone());
+            self.capacity_changed();
+            return Ok(AccountLoginStarted {
+                account: view,
+                login_id: None,
+            });
+        }
         let session = match self.start_login(&account).await {
             Ok(s) => s,
             Err(err) => {
@@ -807,7 +859,7 @@ impl App {
         self.publish_account(view.clone());
         Ok(AccountLoginStarted {
             account: view,
-            login_id: session.id.clone(),
+            login_id: Some(session.id.clone()),
         })
     }
 
@@ -934,7 +986,7 @@ impl App {
             .await?;
         Ok(AccountLoginStarted {
             account: account_view(&account, &self.working_attempts().await?),
-            login_id: session.id.clone(),
+            login_id: Some(session.id.clone()),
         })
     }
 
@@ -1115,6 +1167,7 @@ impl App {
         let home = dir.join("home");
         let config_dir = dir.join(match account.provider {
             Provider::Anthropic => "claude",
+            Provider::OpenAi => "codex",
         });
         create_private_dir(&self.logins_dir())?;
         for d in [&dir, &home, &config_dir] {
@@ -1183,6 +1236,7 @@ impl App {
 
     fn login_plan(&self, provider: Provider, home: &Path, config_dir: &Path) -> LaunchPlan {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+        let mut files = Vec::new();
         let mut env = vec![
             ("HOME".to_owned(), home.to_string_lossy().into_owned()),
             ("PATH".to_owned(), path),
@@ -1198,13 +1252,26 @@ impl App {
                 "CLAUDE_CONFIG_DIR".to_owned(),
                 config_dir.to_string_lossy().into_owned(),
             )),
+            Provider::OpenAi => {
+                env.push((
+                    "CODEX_HOME".to_owned(),
+                    config_dir.to_string_lossy().into_owned(),
+                ));
+                // Credentials stay in CODEX_HOME/auth.json, never the OS keyring, so they can be
+                // moved into the vault (CDX-005).
+                files.push(PlannedFile {
+                    path: config_dir.join("config.toml"),
+                    contents: self.deps.harness.codex_login_config(),
+                    mode: 0o600,
+                });
+            }
         }
         LaunchPlan {
             argv: self.deps.harness.login_argv(provider.harness()),
             cwd: home.to_path_buf(),
             env,
             secret_env: Vec::new(),
-            files: Vec::new(),
+            files,
             containment: Containment::None,
         }
     }
@@ -1349,6 +1416,28 @@ impl App {
                 }
                 held
             }
+            // Codex writes its credentials to a file, not its output: the sign-in holds one
+            // once that file is a usable `auth.json`.
+            Provider::OpenAi => self.codex_login_auth(session).is_ok(),
+        }
+    }
+
+    /// The `auth.json` the Codex sign-in of `session` wrote, validated (CDX-005).
+    fn codex_login_auth(&self, session: &LoginSession) -> Result<Vec<u8>, String> {
+        let path = session.dir.join("codex").join("auth.json");
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|_| "the Codex sign-in did not store credentials".to_owned())?;
+        if !meta.is_file() {
+            return Err("the Codex credentials file is not usable".into());
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|_| "the Codex credentials file could not be read".to_owned())?;
+        match self.deps.harness.codex_auth_problem(&bytes) {
+            None => Ok(bytes),
+            Some(problem) => {
+                scrub(Some(bytes));
+                Err(problem)
+            }
         }
     }
 
@@ -1368,6 +1457,10 @@ impl App {
                     scrub(Some(copy.into_bytes()));
                 }
                 found
+            }
+            Provider::OpenAi => {
+                let auth = self.codex_login_auth(session).ok();
+                auth.and_then(|bytes| String::from_utf8(bytes).ok())
             }
         };
         raw.wipe();

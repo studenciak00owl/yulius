@@ -1,8 +1,12 @@
 //! Login flow contracts: token capture and streaming masking (SPEC-002 §7.2 "Login", §8,
 //! AC-NFR-7). All tokens are synthetic.
 
+use std::cmp::Ordering;
+
 use yulius_harness::login::{
-    MASK, TokenMasker, claude_setup_token_argv, extract_claude_oauth_token,
+    CODEX_FILE_STORE_CONFIG, CodexAuthError, MASK, TokenMasker, claude_setup_token_argv,
+    codex_api_key_auth, codex_device_login_argv, extract_claude_oauth_token, newer_codex_auth,
+    valid_openai_api_key, validate_codex_auth,
 };
 
 const TOKEN: &str = "sk-ant-oat01-SYNTH_abc-DEF0123456789xyzSYNTHETICtoken";
@@ -77,4 +81,67 @@ fn masker_holds_back_only_a_bounded_tail() {
     let mut short = TokenMasker::new();
     assert_eq!(short.push(b"sk-ant-oat01-ABC"), b"");
     assert_eq!(short.finish(), b"sk-ant-oat01-ABC");
+}
+
+/// SPEC-445 CDX-005: the Codex device login and its file credential store.
+#[test]
+fn codex_logs_in_by_device_code_into_a_file() {
+    assert_eq!(
+        codex_device_login_argv(),
+        ["codex", "login", "--device-auth"]
+    );
+    assert_eq!(
+        CODEX_FILE_STORE_CONFIG,
+        "cli_auth_credentials_store = \"file\"\n"
+    );
+}
+
+/// SPEC-445 CDX-005: only an object with an API key or sign-in tokens is a Codex credential.
+#[test]
+fn codex_credentials_are_validated() {
+    let chatgpt = br#"{"auth_mode":"chatgpt","tokens":{"id_token":"i","access_token":"a","refresh_token":"r","account_id":"acc"},"last_refresh":"2026-11-01T10:00:00Z"}"#;
+    assert_eq!(validate_codex_auth(chatgpt), Ok(()));
+    assert_eq!(
+        validate_codex_auth(&codex_api_key_auth("sk-SYNTHETIC0123456789abcdef")),
+        Ok(())
+    );
+    assert_eq!(validate_codex_auth(b""), Err(CodexAuthError::Size));
+    assert_eq!(validate_codex_auth(b"[]"), Err(CodexAuthError::NotJson));
+    assert_eq!(
+        validate_codex_auth(b"{not json"),
+        Err(CodexAuthError::NotJson)
+    );
+    assert_eq!(
+        validate_codex_auth(br#"{"tokens":{"id_token":"only"},"OPENAI_API_KEY":""}"#),
+        Err(CodexAuthError::NoCredential)
+    );
+    let huge = vec![b' '; 1024 * 1024 + 1];
+    assert_eq!(validate_codex_auth(&huge), Err(CodexAuthError::Size));
+}
+
+/// SPEC-445 CDX-005: an API key is checked before it is stored, and stored as Codex writes it.
+#[test]
+fn an_api_key_becomes_a_codex_auth_file() -> Result<(), Box<dyn std::error::Error>> {
+    assert!(valid_openai_api_key("sk-proj-SYNTHETIC_0123456789abcdef"));
+    assert!(!valid_openai_api_key("sk-short"));
+    assert!(!valid_openai_api_key("pk-SYNTHETIC0123456789abcdef"));
+    assert!(!valid_openai_api_key("sk-SYNTHETIC0123456789 abcdef"));
+    let auth: serde_json::Value =
+        serde_json::from_slice(&codex_api_key_auth("sk-SYNTHETIC0123456789abcdef"))?;
+    assert_eq!(auth["auth_mode"], "apikey");
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-SYNTHETIC0123456789abcdef");
+    Ok(())
+}
+
+/// SPEC-445 CDX-006: the copy Codex refreshed last wins the write-back.
+#[test]
+fn the_newer_codex_auth_wins() {
+    let old = br#"{"last_refresh":"2026-11-01T10:00:00Z"}"#;
+    let new = br#"{"last_refresh":"2026-11-02T09:00:00.123456Z"}"#;
+    let none = br#"{"OPENAI_API_KEY":"sk-x"}"#;
+    assert_eq!(newer_codex_auth(new, old), Ordering::Greater);
+    assert_eq!(newer_codex_auth(old, new), Ordering::Less);
+    assert_eq!(newer_codex_auth(old, none), Ordering::Greater);
+    assert_eq!(newer_codex_auth(none, none), Ordering::Equal);
+    assert_eq!(newer_codex_auth(b"garbage", none), Ordering::Equal);
 }

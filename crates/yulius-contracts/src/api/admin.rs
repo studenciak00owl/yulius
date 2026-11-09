@@ -122,13 +122,27 @@ pub struct TokenTotalsView {
     pub cost_usd: Option<f64>,
 }
 
-/// `POST /api/admin/accounts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `POST /api/admin/accounts`. `Debug` never shows the API key.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateAccount {
-    /// Provider: `anthropic` (Claude), the only one supported.
+    /// Provider: `anthropic` (Claude) or `openai` (Codex, SPEC-445).
     pub provider: String,
     /// Label.
     pub label: String,
+    /// An OpenAI API key for an `openai` account: stored as its credential at once, no sign-in
+    /// runs (SPEC-445 CDX-005). Never returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for CreateAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateAccount")
+            .field("provider", &self.provider)
+            .field("label", &self.label)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// Response to account creation or relogin.
@@ -136,8 +150,10 @@ pub struct CreateAccount {
 pub struct AccountLoginStarted {
     /// The account.
     pub account: AccountView,
-    /// Login terminal id (`/api/admin/accounts/login/{login_id}/terminal`).
-    pub login_id: String,
+    /// Login terminal id (`/api/admin/accounts/login/{login_id}/terminal`); absent for an account
+    /// created with an API key, which needs no sign-in (SPEC-445).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_id: Option<String>,
 }
 
 /// Response to `POST /api/admin/accounts/login/{login_id}/cancel` (SPEC-243 LGN-002): how the
