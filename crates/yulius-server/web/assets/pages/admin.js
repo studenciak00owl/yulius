@@ -437,7 +437,9 @@ export function mountAccountsPage(ctx, route) {
       h('input', { type: 'radio', name, value, checked: current === value, onChange: () => { set(value); render(); } }), text);
     const providers = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Agent' });
     const methods = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Sign-in' });
-    const methodField = field('Sign-in', methods);
+    // A group of radios is named by its own label, never wrapped in a <label>.
+    const group = (text, control) => h('div', { class: 'field' }, h('span', { class: 'field-label', 'aria-hidden': 'true' }, text), control);
+    const methodField = group('Sign-in', methods);
     let modal = null;
     function render() {
       setChildren(providers,
@@ -455,7 +457,14 @@ export function mountAccountsPage(ctx, route) {
         : method === 'device'
           ? 'Next, a terminal opens with Codex’s own sign-in (codex login --device-auth): open the link it shows and enter its one-time code. Codex tasks waiting for capacity continue on it as soon as it is signed in.'
           : 'The key is the subscription’s credential at once; Codex tasks can use it right away.';
-      if (modal) modal.setActions(actions());
+      if (modal) {
+        modal.setActions(actions());
+        // The dialog is named after the agent chosen.
+        const title = `Add a ${codex ? 'Codex' : 'Claude'} subscription`;
+        modal.dialog.setAttribute('aria-label', title);
+        const heading = modal.dialog.querySelector('.modal-title');
+        if (heading) heading.textContent = title;
+      }
     }
     function actions() {
       const key = provider === 'openai' && method === 'api_key';
@@ -480,8 +489,8 @@ export function mountAccountsPage(ctx, route) {
     }
     render();
     modal = openModal({
-      title: 'Add a subscription',
-      body: h('div', { class: 'stack' }, field('Agent', providers), field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'), methodField, keyField, hint),
+      title: 'Add a Claude subscription',
+      body: h('div', { class: 'stack' }, group('Agent', providers), field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'), methodField, keyField, hint),
       actions: actions(),
     });
   }

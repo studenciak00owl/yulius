@@ -822,10 +822,13 @@ route('POST', '/api/auth/password', ({ db, body }) => {
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
 // Whether agents can start (SPEC-246 CLA-001): an account signed in and `ok` or `limited`.
-const claudeUsable = (db) => db.accounts.some((a) => a.status === 'ok' || a.status === 'limited');
-// A person's start of an agent without one is refused, with where to connect one (CLA-002).
-const needClaude = (db) => {
-  if (!claudeUsable(db)) fail(409, 'claude_account_required', 'Connect a Claude account first: no Claude account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).');
+const usableOf = (db, provider) => db.accounts.some((a) => (a.provider || 'anthropic') === provider && (a.status === 'ok' || a.status === 'limited'));
+const claudeUsable = (db) => usableOf(db, 'anthropic');
+// A person's start of an agent without one is refused, with where to connect one (CLA-002); a
+// Codex task needs a Codex account (SPEC-445).
+const needClaude = (db, provider = 'anthropic') => {
+  const kind = provider === 'openai' ? 'Codex' : 'Claude';
+  if (!usableOf(db, provider)) fail(409, 'claude_account_required', `Connect a ${kind} account first: no ${kind} account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).`);
 };
 route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
@@ -1356,7 +1359,8 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
-  if (body.harness && body.harness !== 'claude') fail(422, 'invalid', 'harness must be claude (Yulius runs Claude Code only)');
+  if (body.harness && !['claude', 'codex'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude or codex');
+  const harness = body.harness || 'claude';
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
@@ -1371,7 +1375,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const prepared = body.prepared === true || Boolean(body.start_at);
   if (prepared && (body.after_task_id || body.supertask || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
   const startAt = body.start_at ? mockStartAt(body.start_at) : null;
-  if (!prepared) needClaude(db);
+  if (!prepared) needClaude(db, harness === 'codex' ? 'openai' : 'anthropic');
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -1396,7 +1400,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
-    id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: waitsFor ? 'chained' : 'queued', activity: null,
+    id, sandbox_id: sandbox.id, number, title, harness, status: waitsFor ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
@@ -3796,11 +3800,20 @@ route('GET', '/api/admin/accounts', ({ db }) => {
 // 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
-  if (body.provider !== 'anthropic') fail(422, 'invalid', 'provider must be anthropic (Claude)');
+  if (!['anthropic', 'openai'].includes(body.provider)) fail(422, 'invalid', 'provider must be anthropic (Claude) or openai (Codex)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
+  // An OpenAI API key makes a Codex account at once, with no sign-in (SPEC-445).
+  if (body.api_key) {
+    if (body.provider !== 'openai') fail(422, 'invalid', 'an API key is only for an openai (Codex) account');
+    if (!/^sk-[A-Za-z0-9_-]{20,512}$/.test(body.api_key.trim())) fail(422, 'invalid', 'the API key is not an OpenAI API key (sk-…)');
+  }
   db.nextId += 1;
-  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: body.api_key ? 'ok' : 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
+  if (body.api_key) {
+    emit(db, { type: 'account.updated', account });
+    return json(201, { account });
+  }
   db.unsignedAccounts.add(account.id);
   return json(201, { account, login_id: startLogin(db, account.id) });
 });
