@@ -677,13 +677,43 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
 
 /// The `config.toml` Yulius writes into a Codex home before each run: credentials stay in its
 /// `auth.json` (the vault's copy, written back after the run), and Codex neither checks for
-/// updates (the operator installs it, #45) nor asks to trust the worktree.
+/// updates (the operator installs it, #45) nor asks to trust the worktree. The agent's shell keeps
+/// the run's environment (Codex's default) except `CODEX_HOME`: a `codex` the agent runs there
+/// uses its own home, never this one with Yulius's hooks (SPEC-281 SSN-002).
 fn codex_config(worktree: &str) -> Vec<u8> {
     format!(
-        "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n\n[projects.{}]\ntrust_level = \"trusted\"\n",
+        "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n\n\
+         [shell_environment_policy]\nignore_default_excludes = true\nexclude = [\"CODEX_HOME\"]\n\n\
+         [projects.{}]\ntrust_level = \"trusted\"\n",
         toml_string(worktree)
     )
     .into_bytes()
+}
+
+/// The command, arguments and passed variables of a stdio MCP server whose variables are renamed
+/// (`env_vars`: the server's name, the run variable holding its value): `sh -c` exports each from
+/// its run variable and execs the server, its command and arguments being the shell's positional
+/// arguments, never part of its script. Names are checked environment variable names.
+fn codex_stdio_wrapper(
+    server: &str,
+    command: &str,
+    args: &[String],
+    env_vars: &[(String, String)],
+) -> (String, Vec<String>, Vec<String>) {
+    let exports: Vec<String> = env_vars
+        .iter()
+        .map(|(name, var)| format!("{name}=\"${var}\""))
+        .collect();
+    let script = format!("export {}; exec \"$@\"", exports.join(" "));
+    let mut shell_args = vec![
+        "-c".to_owned(),
+        script,
+        format!("mcp-{server}"),
+        command.to_owned(),
+    ];
+    shell_args.extend(args.iter().cloned());
+    let vars = env_vars.iter().map(|(_, var)| var.clone()).collect();
+    ("sh".to_owned(), shell_args, vars)
 }
 
 fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
@@ -774,16 +804,10 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
                 args,
                 env_vars,
             } => {
-                let exports: Vec<String> = env_vars
-                    .iter()
-                    .map(|(name, var)| format!("{name}=\"${var}\""))
-                    .collect();
-                let script = format!("export {}; exec \"$@\"", exports.join(" "));
-                let mut shell_args = vec![script, format!("mcp-{}", server.name), command.clone()];
-                shell_args.extend(args.iter().cloned());
-                config(&format!("{key}.command"), toml_string("sh"));
+                let (shell, shell_args, vars) =
+                    codex_stdio_wrapper(&server.name, command, args, env_vars);
+                config(&format!("{key}.command"), toml_string(&shell));
                 config(&format!("{key}.args"), toml_string_array(&shell_args));
-                let vars: Vec<&str> = env_vars.iter().map(|(_, var)| var.as_str()).collect();
                 config(&format!("{key}.env_vars"), toml_string_array(&vars));
             }
             McpTransport::Http { url, bearer_env } => {
@@ -1089,6 +1113,37 @@ fn pretty(value: &Value) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-445 CDX-002: the wrapper really gives the server its variable under the server's
+    /// name, from the run variable, and passes its arguments untouched.
+    #[test]
+    fn the_codex_stdio_wrapper_renames_variables_for_the_server()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (shell, args, vars) = codex_stdio_wrapper(
+            "apify",
+            "sh",
+            &[
+                "-c".into(),
+                "printf '%s|%s' \"$APIFY_TOKEN\" \"$1\"".into(),
+                "x".into(),
+                "a b; $(id)".into(),
+            ],
+            &[("APIFY_TOKEN".into(), "YULIUS_MCP_APIFY_APIFY_TOKEN".into())],
+        );
+        assert_eq!(vars, ["YULIUS_MCP_APIFY_APIFY_TOKEN"]);
+        let out = std::process::Command::new(shell)
+            .args(&args)
+            .env_clear()
+            .env("YULIUS_MCP_APIFY_APIFY_TOKEN", "synthetic-value")
+            .output()?;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8(out.stdout)?, "synthetic-value|a b; $(id)");
+        Ok(())
+    }
 
     #[test]
     fn shell_quote_handles_quotes() {

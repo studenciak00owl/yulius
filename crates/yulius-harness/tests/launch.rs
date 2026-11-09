@@ -1058,7 +1058,7 @@ fn codex_new_session_argv_snapshot_and_files() -> TestResult {
             "-c",
             "mcp_servers.apify.command=\"sh\"",
             "-c",
-            "mcp_servers.apify.args=[\"export APIFY_TOKEN=\\\"$YULIUS_MCP_APIFY_APIFY_TOKEN\\\"; exec \\\"$@\\\"\",\"mcp-apify\",\"npx\",\"-y\",\"@apify/actors-mcp-server\"]",
+            "mcp_servers.apify.args=[\"-c\",\"export APIFY_TOKEN=\\\"$YULIUS_MCP_APIFY_APIFY_TOKEN\\\"; exec \\\"$@\\\"\",\"mcp-apify\",\"npx\",\"-y\",\"@apify/actors-mcp-server\"]",
             "-c",
             "mcp_servers.apify.env_vars=[\"YULIUS_MCP_APIFY_APIFY_TOKEN\"]",
             "-c",
@@ -1103,6 +1103,7 @@ fn codex_new_session_argv_snapshot_and_files() -> TestResult {
     assert_eq!(
         config,
         "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n\n\
+         [shell_environment_policy]\nignore_default_excludes = true\nexclude = [\"CODEX_HOME\"]\n\n\
          [projects.\"/data/sandboxes/s1/worktrees/t1\"]\ntrust_level = \"trusted\"\n"
     );
     let hooks = json_of(file(&plan, "hooks.json")?)?;
