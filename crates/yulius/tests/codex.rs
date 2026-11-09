@@ -373,6 +373,120 @@ fn only_a_genuine_codex_refresh_reaches_the_vault() -> TestResult {
     Ok(())
 }
 
+/// An administrator's context for `user`.
+async fn admin_ctx(
+    app: &App,
+    user: &UserId,
+) -> Result<yulius_app::auth::AuthContext, Box<dyn std::error::Error>> {
+    Ok(yulius_app::auth::AuthContext {
+        user: app.deps.store.user(user).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    })
+}
+
+/// Runs a Codex task to its end: started, `refreshed` written into its Codex home by "Codex"
+/// when given, then `/exit`.
+async fn run_codex_task(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    title: &str,
+    home: &Path,
+    seen: &str,
+    refreshed: Option<&str>,
+) -> TestResult {
+    let id = new_codex_task(app, sandbox, user, title).await?;
+    wait_for("the banner", Duration::from_secs(30), || {
+        screen_contains(app, &id, "FAKE-AGENT READY")
+    })
+    .await?;
+    assert_eq!(std::fs::read_to_string(home.join("auth.json"))?, seen);
+    if let Some(refreshed) = refreshed {
+        std::fs::write(home.join("auth.json"), refreshed)?;
+    }
+    app.send_input(&id, b"/exit\r").await?;
+    wait_for("the run's end", Duration::from_secs(30), || async {
+        task(app, &id).await.is_ok_and(|t| !t.status.is_live())
+    })
+    .await?;
+    Ok(())
+}
+
+/// SPEC-445 CDX-011, CDX-006: a sign-in imported as an `auth.json` (from `codex login` on a
+/// laptop) is what a Codex task's home gets; the tokens Codex refreshes during the run go back
+/// into the account; and a later import replaces them for the next run.
+#[test]
+fn an_imported_codex_sign_in_reaches_the_run_and_its_refresh_is_kept() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let ctx = admin_ctx(&app, &user).await?;
+        let imported = codex_auth(&ago(3_600_000));
+        let created = app
+            .create_account(
+                &ctx,
+                &yulius_contracts::api::admin::CreateAccount {
+                    provider: "openai".into(),
+                    label: "Codex laptop".into(),
+                    api_key: None,
+                    auth_json: Some(imported.clone()),
+                },
+            )
+            .await?;
+        assert_eq!(created.login_id, None, "no sign-in runs");
+        let account = AccountId::parse(&created.account.id)?;
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+
+        let refreshed = codex_auth(&ago(60_000));
+        run_codex_task(
+            &app,
+            &sandbox,
+            &user,
+            "Codex import",
+            &home,
+            &imported,
+            Some(&refreshed),
+        )
+        .await?;
+        wait_for(
+            "the written-back credentials",
+            Duration::from_secs(10),
+            || async {
+                stored_credential(&app, &account)
+                    .await
+                    .is_ok_and(|stored| stored == refreshed)
+            },
+        )
+        .await?;
+
+        // Signed in again on the laptop and imported: the next run gets the new file.
+        let again = codex_auth(&ago(1_000)).replace("SYNTHETIC-refresh", "SYNTHETIC-refresh-2");
+        app.import_account_auth(
+            &ctx,
+            account.as_str(),
+            &yulius_contracts::api::admin::ImportAccountAuth {
+                auth_json: again.clone(),
+            },
+        )
+        .await?;
+        assert_eq!(stored_credential(&app, &account).await?, again);
+        run_codex_task(&app, &sandbox, &user, "Codex reimport", &home, &again, None).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-445 CDX-009, AC-445-2: a Codex task at its usage limit moves to another Codex account by
 /// a native resume of the same session, never to the Claude account, and the limited account is
 /// marked; Codex does not go on by itself, so the resume asks it to.
