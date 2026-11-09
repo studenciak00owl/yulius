@@ -2326,10 +2326,19 @@ impl App {
         if others {
             return;
         }
-        // Only the vault's own copy goes: a file that did not reach the vault (a refresh that
-        // could not be stored, or one not taken) may hold the only copy of rotated tokens.
+        // An account gone or signed out meanwhile has no tokens to keep: whatever is there goes.
+        let gone = match self.deps.store.account(account_id).await {
+            Ok(Some(account)) => account.credential.is_none(),
+            Ok(None) => true,
+            Err(_) => false,
+        };
+        // Otherwise only the vault's own copy goes: a file that did not reach the vault (a
+        // refresh that could not be stored, or one not taken) may hold the only copy of rotated
+        // tokens.
         match read_codex_auth(&root, account_id) {
-            Ok(Some(file)) if held.as_ref().is_some_and(|h| h.expose().as_bytes() == file) => {
+            Ok(Some(file))
+                if gone || held.as_ref().is_some_and(|h| h.expose().as_bytes() == file) =>
+            {
                 if let Err(err) = remove_codex_auth(&root, account_id) {
                     tracing::warn!(task = %task_id, error = %err, "the run's Codex credentials could not be removed");
                 }

@@ -506,3 +506,46 @@ fn a_codex_task_waits_while_no_codex_account_has_capacity() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-445 CDX-006 (review round 3): when the account is gone by the run's end (removed or
+/// signed out meanwhile), its credentials do not stay in the sandbox for later tasks to read.
+#[test]
+fn a_gone_accounts_codex_credentials_leave_the_sandbox() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_codex_task(&app, &sandbox, &user, "Codex gone").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+        // Codex refreshed meanwhile, so the file differs from what the vault held.
+        std::fs::write(home.join("auth.json"), codex_auth(&ago(1_000)))?;
+        app.deps.store.delete_account(&account).await?;
+        app.send_input(&id, b"/exit\r").await?;
+        wait_for("the run's end", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        wait_for(
+            "the credentials removed",
+            Duration::from_secs(10),
+            || async { !home.join("auth.json").exists() },
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
