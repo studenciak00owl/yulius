@@ -98,6 +98,14 @@ async fn stored_credential(
     Ok(String::from_utf8(app.deps.crypto.open(&sealed)?)?)
 }
 
+/// An RFC 3339 time `ms_ago` milliseconds before now (a refresh Codex just made).
+fn ago(ms_ago: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
+    yulius_app::auth::rfc3339(Timestamp(now - ms_ago))
+}
+
 /// The output tokens stored for `attempt`.
 fn saved_output(data: &Path, attempt: &str) -> Option<i64> {
     let db = rusqlite::Connection::open(data.join("yulius.db")).ok()?;
@@ -265,9 +273,14 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
             screen_contains(&app, &task_id, "ECHO: again")
         })
         .await?;
-        // Codex refreshed its tokens during the run: the newer file is kept when the run ends.
-        let refreshed = codex_auth("2026-11-09T12:00:00Z");
+        // Codex refreshed its tokens during the run: the newer file is kept when the run ends,
+        // and the account, limited meanwhile, keeps its state.
+        let refreshed = codex_auth(&ago(60_000));
         std::fs::write(home.join("auth.json"), &refreshed)?;
+        app.deps
+            .store
+            .set_account_state(&account, AccountStatus::Limited, None, None, app.now())
+            .await?;
         app.send_input(&task_id, b"/exit\r").await?;
         wait_for("the run's end", Duration::from_secs(30), || async {
             task(&app, &task_id)
@@ -288,12 +301,64 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
         let stored = app.deps.store.account(&account).await?.ok_or("account")?;
         assert_eq!(
             stored.status,
-            AccountStatus::Ok,
+            AccountStatus::Limited,
             "the account keeps its state"
         );
+        // No run of the account is left in the sandbox: its credential does not stay there.
+        assert!(
+            !home.join("auth.json").exists(),
+            "auth.json left in the sandbox"
+        );
+        assert!(home.join("config.toml").exists());
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-445 CDX-006: the Codex home's `auth.json` is the agent's to write, so only a genuine
+/// refresh goes back into the vault. A newer one another run of the account left in the sandbox
+/// is taken at the next launch instead of being overwritten with the vault's older copy; one the
+/// agent forged (another ChatGPT account) is never taken.
+#[test]
+fn only_a_genuine_codex_refresh_reaches_the_vault() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        // Another run of the account refreshed its tokens and is still going: its file is newer.
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+        std::fs::create_dir_all(&home)?;
+        let left = codex_auth(&ago(120_000));
+        std::fs::write(home.join("auth.json"), &left)?;
+        let id = new_codex_task(&app, &sandbox, &user, "Codex refresh").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        assert_eq!(std::fs::read_to_string(home.join("auth.json"))?, left);
+        assert_eq!(stored_credential(&app, &account).await?, left);
+        // The agent writes a sign-in of its own: it is not taken when the run ends.
+        let forged = codex_auth(&ago(1_000)).replace("acc-synthetic", "acc-attacker");
+        std::fs::write(home.join("auth.json"), &forged)?;
+        app.send_input(&id, b"/exit\r").await?;
+        wait_for("the run's end", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        assert_eq!(stored_credential(&app, &account).await?, left);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
 

@@ -952,14 +952,7 @@ impl App {
         )
         .map_err(linked)?;
         let home = root.join("codex").join(account.as_str());
-        match nix::sys::stat::fstatat(&dir, "sessions", nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
-            Ok(_) => {}
-            Err(nix::errno::Errno::ENOENT) => {
-                nix::unistd::symlinkat("../sessions", &dir, "sessions")
-                    .map_err(crate::files::errno_error)?;
-            }
-            Err(err) => return Err(crate::files::errno_error(err)),
-        }
+        ensure_sessions_link(&dir)?;
         Ok((home, dir))
     }
 
@@ -1329,10 +1322,19 @@ impl App {
         let credential = self.open_credential(&account)?;
         let home = self.sandbox_home(&sandbox.id);
         make_home(&self.sandbox_dir(&sandbox.id))?;
-        // A Codex run has the account's own Codex home in the sandbox (SPEC-445 CDX-003).
+        // A Codex run has the account's own Codex home in the sandbox (SPEC-445 CDX-003). Another
+        // run of the account may have refreshed its tokens there: that copy is kept, never
+        // overwritten with the vault's older one (CDX-006).
         let codex_home = match harness {
             Harness::Codex => Some(self.codex_home(&sandbox.id, &account.id)?),
             Harness::ClaudeCode => None,
+        };
+        let credential = match &codex_home {
+            Some(_) => self
+                .keep_codex_refresh(&self.sandbox_dir(&sandbox.id), &account.id)
+                .await
+                .unwrap_or(credential),
+            None => credential,
         };
         self.prepare_run_extras(&sandbox, &home).await;
 
@@ -2286,9 +2288,11 @@ impl App {
         }
     }
 
-    /// After a Codex run: its home's `auth.json` replaces the account's credential when Codex
-    /// refreshed it during the run (newer `last_refresh`, SPEC-445 CDX-006). The file is read
-    /// through the home's handle, bounded, and only a valid credential is kept.
+    /// After a Codex run: its home's `auth.json` replaces the account's credential when it is a
+    /// genuine refresh of the same sign-in (SPEC-445 CDX-006); the file lies where the agent
+    /// writes, so a forged one is not taken. The account keeps its state. Once no run of the
+    /// account is left in the sandbox, the file is removed: the credential lives in the vault,
+    /// not in a folder later tasks can read.
     async fn write_back_codex_auth(&self, task_id: &TaskId, attempt: &AttemptRecord) {
         let Some(account_id) = &attempt.account_id else {
             return;
@@ -2296,49 +2300,73 @@ impl App {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
-        let Ok(Some(account)) = self.deps.store.account(account_id).await else {
-            return;
-        };
         let root = self.sandbox_dir(&task.sandbox_id);
-        let fresh = match read_codex_auth(&root, account_id) {
+        self.keep_codex_refresh(&root, account_id).await;
+        let others = match self.deps.store.live_attempts().await {
+            Ok(live) => {
+                let mut others = false;
+                for other in live.iter().filter(|a| {
+                    a.id != attempt.id
+                        && a.harness == Harness::Codex
+                        && a.account_id.as_ref() == Some(account_id)
+                }) {
+                    if let Ok(Some(t)) = self.deps.store.task(&other.task_id).await
+                        && t.sandbox_id == task.sandbox_id
+                    {
+                        others = true;
+                    }
+                }
+                others
+            }
+            Err(_) => true,
+        };
+        if !others && let Err(err) = remove_codex_auth(&root, account_id) {
+            tracing::warn!(task = %task_id, error = %err, "the run's Codex credentials could not be removed");
+        }
+    }
+
+    /// Stores the `auth.json` in the Codex home of `account` below `root` when it replaces the
+    /// account's credential ([`HarnessPort::codex_auth_replaces`]), and returns the credential
+    /// the account holds afterwards; `None` when the account or its credential is gone (signed
+    /// out meanwhile: nothing is stored back).
+    async fn keep_codex_refresh(&self, root: &Path, account_id: &AccountId) -> Option<Secret> {
+        let account = self.deps.store.account(account_id).await.ok().flatten()?;
+        let stored = self.deps.crypto.open(account.credential.as_ref()?).ok()?;
+        let fresh = match read_codex_auth(root, account_id) {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return,
+            Ok(None) => return String::from_utf8(stored).ok().map(Secret),
             Err(err) => {
-                tracing::warn!(task = %task_id, error = %err, "the run's Codex credentials could not be read");
-                return;
+                tracing::warn!(account = %account_id, error = %err, "the Codex home's credentials could not be read");
+                return String::from_utf8(stored).ok().map(Secret);
             }
         };
-        if let Some(problem) = self.deps.harness.codex_auth_problem(&fresh) {
-            tracing::warn!(task = %task_id, %problem, "the run left unusable Codex credentials");
-            return;
-        }
-        let stored = account
-            .credential
-            .as_ref()
-            .and_then(|sealed| self.deps.crypto.open(sealed).ok());
-        if stored
-            .as_deref()
-            .is_some_and(|stored| !self.deps.harness.codex_auth_newer(&fresh, stored))
+        if !self
+            .deps
+            .harness
+            .codex_auth_replaces(&fresh, &stored, self.now())
         {
-            return;
+            return String::from_utf8(stored).ok().map(Secret);
         }
         let sealed = match self.deps.crypto.seal(&fresh) {
             Ok(sealed) => sealed,
             Err(err) => {
                 tracing::error!(error = %err, "could not seal refreshed Codex credentials");
-                return;
+                return String::from_utf8(stored).ok().map(Secret);
             }
         };
-        // The account keeps its state: only its credential is newer.
         match self
             .deps
             .store
             .set_account_credential(account_id, &sealed, account.status, self.now())
             .await
         {
-            Ok(()) => tracing::info!(account = %account_id, "refreshed Codex credentials kept"),
+            Ok(()) => {
+                tracing::info!(account = %account_id, "refreshed Codex credentials kept");
+                String::from_utf8(fresh).ok().map(Secret)
+            }
             Err(err) => {
-                tracing::error!(error = %err, "could not store refreshed Codex credentials")
+                tracing::error!(error = %err, "could not store refreshed Codex credentials");
+                String::from_utf8(stored).ok().map(Secret)
             }
         }
     }
@@ -4403,12 +4431,49 @@ async fn request_shutdown(runtime: &TaskRuntime) {
     }
 }
 
-/// Makes the sandbox's home, `<sandbox_dir>/home`, when it is missing. The home is the agent's:
-/// it is made with `mkdirat` from the sandbox directory and opened without following a link, so a
-/// `home` link, dangling or to a host folder, fails the start and is never taken as the home
-/// (#661, ADR-0174).
+/// Where a Codex home's `sessions` points: the sandbox's shared sessions.
+const CODEX_SESSIONS_LINK: &str = "../sessions";
+
+/// Makes the Codex home `dir`'s `sessions` the link to the sandbox's shared sessions, or checks
+/// that it is: anything else (a folder, another link) would put rollouts where Yulius and the
+/// other accounts' runs never look, so the start is refused (SPEC-445 CDX-003).
+fn ensure_sessions_link(dir: &std::os::fd::OwnedFd) -> AppResult<()> {
+    match nix::fcntl::readlinkat(dir, "sessions") {
+        Ok(target) if target == std::ffi::OsStr::new(CODEX_SESSIONS_LINK) => Ok(()),
+        Ok(_) | Err(nix::errno::Errno::EINVAL) => Err(AppError::internal(
+            "the Codex home's sessions is not Yulius's link to the sandbox's sessions",
+        )),
+        Err(nix::errno::Errno::ENOENT) => {
+            nix::unistd::symlinkat(CODEX_SESSIONS_LINK, dir, "sessions")
+                .map_err(crate::files::errno_error)
+        }
+        Err(err) => Err(crate::files::errno_error(err)),
+    }
+}
+
 /// Largest Codex `auth.json` read back from a run (SPEC-445 CDX-006).
 const CODEX_AUTH_MAX: u64 = 1024 * 1024;
+
+/// Removes the `auth.json` of `account`'s Codex home below `root`, opened without following a
+/// link; a missing one is fine.
+fn remove_codex_auth(root: &Path, account: &AccountId) -> AppResult<()> {
+    let dir = match crate::files::open_dirs_below(
+        root,
+        &[
+            std::ffi::OsStr::new("codex"),
+            std::ffi::OsStr::new(account.as_str()),
+        ],
+        false,
+    ) {
+        Ok(dir) => dir,
+        Err(nix::errno::Errno::ENOENT) => return Ok(()),
+        Err(err) => return Err(crate::files::errno_error(err)),
+    };
+    match nix::unistd::unlinkat(&dir, "auth.json", nix::unistd::UnlinkatFlags::NoRemoveDir) {
+        Ok(()) | Err(nix::errno::Errno::ENOENT) => Ok(()),
+        Err(err) => Err(crate::files::errno_error(err)),
+    }
+}
 
 /// Writes the plan's files of the Codex home `home` through its handle `dir` (mode 0600) and takes
 /// them out of the plan: the agent could have turned a path below the sandbox into a link.
@@ -4480,6 +4545,10 @@ fn read_codex_auth(root: &Path, account: &AccountId) -> AppResult<Option<Vec<u8>
     Ok(Some(bytes))
 }
 
+/// Makes the sandbox's home, `<sandbox_dir>/home`, when it is missing. The home is the agent's:
+/// it is made with `mkdirat` from the sandbox directory and opened without following a link, so a
+/// `home` link, dangling or to a host folder, fails the start and is never taken as the home
+/// (#661, ADR-0174).
 fn make_home(sandbox_dir: &Path) -> AppResult<()> {
     std::fs::create_dir_all(sandbox_dir).map_err(AppError::internal)?;
     crate::files::open_dirs_below(sandbox_dir, &[std::ffi::OsStr::new("home")], true)
@@ -4515,6 +4584,75 @@ mod tests {
     /// #661: a `home` link fails the start, dangling (nothing is made where it points) or to a
     /// host folder (which is not taken as the home); a missing home is made, an existing one
     /// kept (SPEC-266 STB-004).
+    /// SPEC-445 CDX-006: the run's `auth.json` is read without following a link the agent put
+    /// there, and a home that is a link is refused; a missing one is nothing to read.
+    #[test]
+    fn codex_credentials_are_read_without_following_links() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use super::{AccountId, read_codex_auth, remove_codex_auth};
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        let account = AccountId::parse("acc-1")?;
+        assert_eq!(read_codex_auth(root, &account)?, None);
+        let home = root.join("codex/acc-1");
+        std::fs::create_dir_all(&home)?;
+        assert_eq!(read_codex_auth(root, &account)?, None);
+        std::fs::write(home.join("auth.json"), b"{}")?;
+        assert_eq!(read_codex_auth(root, &account)?, Some(b"{}".to_vec()));
+        std::fs::remove_file(home.join("auth.json"))?;
+        std::fs::write(root.join("secret.json"), b"host secret")?;
+        std::os::unix::fs::symlink(root.join("secret.json"), home.join("auth.json"))?;
+        assert!(
+            read_codex_auth(root, &account).is_err(),
+            "a linked auth.json"
+        );
+        remove_codex_auth(root, &account)?;
+        assert!(
+            root.join("secret.json").exists(),
+            "the link's target is untouched"
+        );
+        assert!(std::fs::symlink_metadata(home.join("auth.json")).is_err());
+        std::fs::remove_dir(&home)?;
+        std::os::unix::fs::symlink(root, &home)?;
+        std::fs::write(root.join("auth.json"), b"{}")?;
+        assert!(read_codex_auth(root, &account).is_err(), "a linked home");
+        Ok(())
+    }
+
+    /// SPEC-445 CDX-003: a Codex home's `sessions` is made the link to the shared sessions, kept
+    /// when it is, and anything else refuses the start.
+    #[test]
+    fn a_codex_homes_sessions_is_the_shared_link() -> Result<(), Box<dyn std::error::Error>> {
+        use super::ensure_sessions_link;
+        let dir = tempfile::tempdir()?;
+        let open = |path: &std::path::Path| {
+            nix::fcntl::open(
+                path,
+                nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_DIRECTORY,
+                nix::sys::stat::Mode::empty(),
+            )
+        };
+        let home = dir.path().join("a");
+        std::fs::create_dir(&home)?;
+        ensure_sessions_link(&open(&home)?)?;
+        assert_eq!(
+            std::fs::read_link(home.join("sessions"))?,
+            std::path::PathBuf::from("../sessions")
+        );
+        ensure_sessions_link(&open(&home)?)?;
+        let folder = dir.path().join("b");
+        std::fs::create_dir_all(folder.join("sessions"))?;
+        assert!(ensure_sessions_link(&open(&folder)?).is_err(), "a folder");
+        let other = dir.path().join("c");
+        std::fs::create_dir(&other)?;
+        std::os::unix::fs::symlink("/etc", other.join("sessions"))?;
+        assert!(
+            ensure_sessions_link(&open(&other)?).is_err(),
+            "another link"
+        );
+        Ok(())
+    }
+
     #[test]
     fn the_home_is_made_without_following_a_link() -> Result<(), Box<dyn std::error::Error>> {
         let sandbox = tempfile::tempdir()?;

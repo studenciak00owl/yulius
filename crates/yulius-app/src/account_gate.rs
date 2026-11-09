@@ -106,12 +106,17 @@ impl App {
         Ok(agent_accounts(&accounts, provider))
     }
 
-    /// Whether a Claude account is usable (`GET /api/me` `claude_connected`).
+    /// Whether an agent can start (`GET /api/me` `claude_connected`): a Claude account, or in this
+    /// fork a Codex one, is usable (SPEC-445). A start of the other harness says which account it
+    /// lacks (CLA-002).
     ///
     /// # Errors
     /// Store failures.
     pub async fn claude_connected(&self) -> AppResult<bool> {
-        Ok(self.agent_accounts(Provider::Anthropic).await? == AgentAccounts::Usable)
+        let accounts = self.deps.store.accounts().await?;
+        Ok([Provider::Anthropic, Provider::OpenAi]
+            .into_iter()
+            .any(|p| agent_accounts(&accounts, p) == AgentAccounts::Usable))
     }
 
     /// Refuses a person's start of an agent while no account of `provider` is usable (CLA-002).

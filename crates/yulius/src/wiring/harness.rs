@@ -270,8 +270,14 @@ impl HarnessPort for HarnessAdapter {
         since: Timestamp,
     ) -> AppResult<Option<(String, PathBuf)>> {
         let wanted = worktree.to_string_lossy();
-        for path in paths::recent_codex_rollouts(sessions_dir, to_system(since)).map_err(io)? {
-            let Ok(file) = std::fs::File::open(&path) else {
+        // The run's own session started first; a later one is a `codex` the agent ran there. A
+        // rollout's path (`YYYY/MM/DD/rollout-<start time>-…`) orders sessions by their start; its
+        // modification time grows as it is written.
+        let mut recent =
+            paths::recent_codex_rollouts(sessions_dir, to_system(since)).map_err(io)?;
+        recent.sort();
+        for path in &recent {
+            let Ok(file) = std::fs::File::open(path) else {
                 continue;
             };
             // The first line is the session's `session_meta` (its base instructions included).
@@ -304,8 +310,8 @@ impl HarnessPort for HarnessAdapter {
         login::valid_openai_api_key(api_key).then(|| login::codex_api_key_auth(api_key))
     }
 
-    fn codex_auth_newer(&self, a: &[u8], b: &[u8]) -> bool {
-        login::newer_codex_auth(a, b) == std::cmp::Ordering::Greater
+    fn codex_auth_replaces(&self, fresh: &[u8], stored: &[u8], now: Timestamp) -> bool {
+        login::codex_auth_replaces(fresh, stored, now)
     }
 
     fn codex_login_config(&self) -> Vec<u8> {
@@ -649,6 +655,59 @@ mod tests {
             credential: Credential::ClaudeOauthToken(HSecret::new("token".into())),
         };
         launch::plan_launch(&request)?;
+        Ok(())
+    }
+
+    /// SPEC-445 CDX-003: without a hook, a Codex run's session is the first rollout of its
+    /// worktree since it started, never a later one (a `codex` the agent ran there), nor one of
+    /// another worktree.
+    #[test]
+    fn a_codex_session_is_the_first_rollout_of_the_worktree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let sessions = dir.path().join("sessions");
+        let day = sessions.join("2026/11/09");
+        std::fs::create_dir_all(&day)?;
+        let meta = |id: &str, cwd: &str| {
+            format!(
+                "{{\"timestamp\":\"2026-11-09T10:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\"}}}}\n"
+            )
+        };
+        let since = SystemTime::now() - Duration::from_secs(60);
+        // The run's own rollout started first but is written to last (newest modification).
+        for (name, id, cwd, age) in [
+            (
+                "rollout-2026-11-09T10-00-00-first.jsonl",
+                "first",
+                "/w/t1",
+                1,
+            ),
+            (
+                "rollout-2026-11-09T10-00-20-nested.jsonl",
+                "nested",
+                "/w/t1",
+                10,
+            ),
+            (
+                "rollout-2026-11-09T09-59-59-other.jsonl",
+                "other",
+                "/w/t2",
+                5,
+            ),
+        ] {
+            let path = day.join(name);
+            std::fs::write(&path, meta(id, cwd))?;
+            std::fs::File::options()
+                .write(true)
+                .open(&path)?
+                .set_modified(SystemTime::now() - Duration::from_secs(age))?;
+        }
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
+        let since_ts = Timestamp(i64::try_from(
+            since.duration_since(UNIX_EPOCH)?.as_millis(),
+        )?);
+        let found = adapter.discover_codex_session(&sessions, Path::new("/w/t1"), since_ts)?;
+        assert_eq!(found.map(|(id, _)| id).as_deref(), Some("first"));
         Ok(())
     }
 

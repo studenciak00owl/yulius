@@ -405,8 +405,8 @@ impl HarnessPort for FakeAgentHarness {
     fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>> {
         self.inner.codex_api_key_auth(api_key)
     }
-    fn codex_auth_newer(&self, a: &[u8], b: &[u8]) -> bool {
-        self.inner.codex_auth_newer(a, b)
+    fn codex_auth_replaces(&self, fresh: &[u8], stored: &[u8], now: Timestamp) -> bool {
+        self.inner.codex_auth_replaces(fresh, stored, now)
     }
     fn codex_login_config(&self) -> Vec<u8> {
         self.inner.codex_login_config()

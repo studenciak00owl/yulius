@@ -369,8 +369,10 @@ pub trait HarnessPort: Send + Sync {
     fn codex_auth_problem(&self, auth_json: &[u8]) -> Option<String>;
     /// The `auth.json` of an OpenAI API key, `None` when the key is not one.
     fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>>;
-    /// Whether the Codex `auth.json` `a` was refreshed after `b` (SPEC-445 CDX-006).
-    fn codex_auth_newer(&self, a: &[u8], b: &[u8]) -> bool;
+    /// Whether the `auth.json` a Codex run left (`fresh`, written where the agent can write)
+    /// replaces the account's `stored` one: a genuine refresh of the same sign-in, not dated after
+    /// `now` (SPEC-445 CDX-006).
+    fn codex_auth_replaces(&self, fresh: &[u8], stored: &[u8], now: Timestamp) -> bool;
     /// The `config.toml` of a Codex home Yulius prepares for a sign-in: credentials in a file.
     fn codex_login_config(&self) -> Vec<u8>;
     /// Login command for a provider account.

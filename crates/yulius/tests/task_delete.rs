@@ -128,6 +128,21 @@ async fn tasks_run_claude_code_or_codex() -> TestResult {
     .await?;
     assert_eq!(codex.status, StatusCode::CREATED, "{:?}", codex.body);
     assert_eq!(codex.body["harness"], "codex");
+    // A Claude model is not Codex's (SPEC-445): refused before the task exists.
+    let claude_model = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "x", "harness": "codex", "model": "claude-opus-5-5", "prepared": true})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        claude_model.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        claude_model.body
+    );
     // A Codex task that would start needs a Codex account, and says so (SPEC-246 CLA-002).
     let unaccounted = call(
         &h.router,

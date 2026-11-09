@@ -15,6 +15,8 @@ use std::cmp::Ordering;
 
 use serde_json::{Value, json};
 
+use yulius_domain::time::Timestamp;
+
 use crate::time::parse_rfc3339;
 
 /// Prefix of Claude long-lived OAuth tokens.
@@ -129,6 +131,38 @@ pub fn newer_codex_auth(a: &[u8], b: &[u8]) -> Ordering {
         (None, Some(_)) => Ordering::Less,
         (None, None) => ra.cmp(&rb),
     }
+}
+
+/// How far ahead of the server's clock a refreshed `auth.json` may be dated.
+pub const CODEX_REFRESH_SKEW_MS: i64 = 5 * 60 * 1000;
+
+/// Whether the `auth.json` a Codex run left (`fresh`) replaces the account's stored one: Codex
+/// refreshed the same ChatGPT sign-in (same `tokens.account_id`, a usable credential) at a
+/// `last_refresh` newer than the stored one and at most [`CODEX_REFRESH_SKEW_MS`] after `now`.
+/// The file lies in the agent's sandbox: one it wrote itself (another account, an API key, a date
+/// ahead so that real refreshes never win) is not taken. An API-key account is never replaced.
+#[must_use]
+pub fn codex_auth_replaces(fresh: &[u8], stored: &[u8], now: Timestamp) -> bool {
+    let account = |auth: &[u8]| -> Option<String> {
+        let value: Value = serde_json::from_slice(auth).ok()?;
+        value
+            .get("tokens")?
+            .get("account_id")?
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+    };
+    let Some(refreshed) = codex_auth_last_refresh(fresh)
+        .as_deref()
+        .and_then(parse_rfc3339)
+    else {
+        return false;
+    };
+    validate_codex_auth(fresh).is_ok()
+        && account(stored).is_some()
+        && account(fresh) == account(stored)
+        && refreshed.0 <= now.0.saturating_add(CODEX_REFRESH_SKEW_MS)
+        && newer_codex_auth(fresh, stored) == Ordering::Greater
 }
 
 /// The last Claude OAuth token in `output`: `sk-ant-oat01-` followed by at least 20 of

@@ -160,7 +160,7 @@ pub fn parse_codex(body: &Value, now: Timestamp) -> Result<AccountUsage, String>
             resets_at,
         })
     };
-    let usage = AccountUsage {
+    let mut usage = AccountUsage {
         primary: window("primary_window"),
         secondary: window("secondary_window"),
         limit_reached: limits
@@ -170,6 +170,21 @@ pub fn parse_codex(body: &Value, now: Timestamp) -> Result<AccountUsage, String>
         observed_at: Some(now),
         ..AccountUsage::default()
     };
+    if usage.limit_reached {
+        // A reached limit resets with its full window; without one, with the latest known reset.
+        let windows: Vec<UsageWindow> = usage
+            .primary
+            .iter()
+            .chain(usage.secondary.iter())
+            .copied()
+            .collect();
+        usage.limit_resets_at = windows
+            .iter()
+            .filter(|w| w.used_percent.is_some_and(|p| p >= 100.0))
+            .filter_map(|w| w.resets_at)
+            .max()
+            .or_else(|| windows.iter().filter_map(|w| w.resets_at).max());
+    }
     if usage.primary.is_none() && usage.secondary.is_none() {
         return Err("the provider reported no usage windows".into());
     }
@@ -459,6 +474,26 @@ mod tests {
         let secondary = usage.secondary.ok_or("secondary")?;
         assert_eq!(secondary.window_minutes, Some(10_080));
         assert_eq!(secondary.resets_at, Some(Timestamp(3_601_000)));
+        assert_eq!(usage.limit_resets_at, None, "no limit reached");
+        // A reached limit resets with its full window, else with the latest known reset.
+        let full = parse_codex(
+            &json!({"rate_limit": {"limit_reached": true,
+                "primary_window": {"used_percent": 100, "limit_window_seconds": 18000, "reset_at": 1_794_230_000},
+                "secondary_window": {"used_percent": 40, "limit_window_seconds": 604800, "reset_at": 1_794_700_000}}}),
+            Timestamp(1_000),
+        )?;
+        assert!(full.limit_reached);
+        assert_eq!(full.limit_resets_at, Some(Timestamp(1_794_230_000_000)));
+        let none_full = parse_codex(
+            &json!({"rate_limit": {"limit_reached": true,
+                "primary_window": {"used_percent": 70, "limit_window_seconds": 18000, "reset_at": 1_794_230_000},
+                "secondary_window": {"used_percent": 90, "limit_window_seconds": 604800, "reset_at": 1_794_700_000}}}),
+            Timestamp(1_000),
+        )?;
+        assert_eq!(
+            none_full.limit_resets_at,
+            Some(Timestamp(1_794_700_000_000))
+        );
         assert!(parse_codex(&json!({"rate_limit": {}}), Timestamp(0)).is_err());
         assert!(parse_codex(&json!({}), Timestamp(0)).is_err());
         Ok(())

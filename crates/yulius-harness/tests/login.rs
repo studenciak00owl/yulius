@@ -3,10 +3,11 @@
 
 use std::cmp::Ordering;
 
+use yulius_domain::time::Timestamp;
 use yulius_harness::login::{
     CODEX_FILE_STORE_CONFIG, CodexAuthError, MASK, TokenMasker, claude_setup_token_argv,
-    codex_api_key_auth, codex_device_login_argv, extract_claude_oauth_token, newer_codex_auth,
-    valid_openai_api_key, validate_codex_auth,
+    codex_api_key_auth, codex_auth_replaces, codex_device_login_argv, extract_claude_oauth_token,
+    newer_codex_auth, valid_openai_api_key, validate_codex_auth,
 };
 
 const TOKEN: &str = "sk-ant-oat01-SYNTH_abc-DEF0123456789xyzSYNTHETICtoken";
@@ -144,4 +145,62 @@ fn the_newer_codex_auth_wins() {
     assert_eq!(newer_codex_auth(old, none), Ordering::Greater);
     assert_eq!(newer_codex_auth(none, none), Ordering::Equal);
     assert_eq!(newer_codex_auth(b"garbage", none), Ordering::Equal);
+}
+
+fn chatgpt(account: &str, refreshed: &str) -> Vec<u8> {
+    format!(
+        r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"a-{refreshed}","refresh_token":"r","account_id":"{account}"}},"last_refresh":"{refreshed}"}}"#
+    )
+    .into_bytes()
+}
+
+/// SPEC-445 CDX-006: a run's `auth.json` replaces the stored one only when Codex refreshed the
+/// same sign-in: same ChatGPT account, a newer `last_refresh` that is not in the future. A file
+/// the agent forged (another account, an API key, a date ahead) or an older one never does, and an
+/// API-key account is never replaced.
+#[test]
+fn only_a_genuine_refresh_replaces_the_stored_codex_credential() {
+    // 2026-11-09T12:00:00Z.
+    let now = Timestamp(1_794_225_600_000);
+    let stored = chatgpt("acc-1", "2026-11-01T10:00:00Z");
+    assert!(codex_auth_replaces(
+        &chatgpt("acc-1", "2026-11-09T11:59:00Z"),
+        &stored,
+        now
+    ));
+    // A clock a little ahead is tolerated, a date far ahead is not.
+    assert!(codex_auth_replaces(
+        &chatgpt("acc-1", "2026-11-09T12:04:00Z"),
+        &stored,
+        now
+    ));
+    assert!(!codex_auth_replaces(
+        &chatgpt("acc-1", "2027-01-01T00:00:00Z"),
+        &stored,
+        now
+    ));
+    assert!(!codex_auth_replaces(
+        &chatgpt("acc-1", "2026-10-01T00:00:00Z"),
+        &stored,
+        now
+    ));
+    assert!(!codex_auth_replaces(&stored, &stored, now));
+    assert!(!codex_auth_replaces(
+        &chatgpt("acc-2", "2026-11-09T11:00:00Z"),
+        &stored,
+        now
+    ));
+    assert!(!codex_auth_replaces(
+        br#"{"auth_mode":"chatgpt","tokens":{"access_token":"a","account_id":"acc-1"}}"#,
+        &stored,
+        now
+    ));
+    let key = codex_api_key_auth("sk-SYNTHETIC0123456789abcdef");
+    assert!(!codex_auth_replaces(&key, &stored, now));
+    assert!(!codex_auth_replaces(
+        &chatgpt("acc-1", "2026-11-09T11:00:00Z"),
+        &key,
+        now
+    ));
+    assert!(!codex_auth_replaces(b"{}", &stored, now));
 }

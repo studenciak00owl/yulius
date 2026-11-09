@@ -326,6 +326,17 @@ impl App {
         let sid = sid.clone();
         self.require(user, &sid, Action::Work).await?;
         let harness = parse_harness(&req.harness)?;
+        // Codex runs OpenAI's models: a Claude model would make its run fail at start (SPEC-445).
+        if harness == Harness::Codex
+            && req
+                .model
+                .as_deref()
+                .is_some_and(|m| m.trim().to_ascii_lowercase().starts_with("claude"))
+        {
+            return Err(AppError::Invalid(
+                "a Codex task takes an OpenAI model, not a Claude one".into(),
+            ));
+        }
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
         let mode = match req.mode.as_deref().map(str::trim) {

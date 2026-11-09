@@ -325,3 +325,24 @@ pub struct ManifestCallback {
     #[serde(default)]
     pub state: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-445 CDX-005: a Codex account's API key never shows in logs.
+    #[test]
+    fn create_account_debug_hides_the_api_key() {
+        let request = CreateAccount {
+            provider: "openai".into(),
+            label: "Codex".into(),
+            api_key: Some("sk-SYNTHETIC0123456789abcdef".into()),
+        };
+        let shown = format!("{request:?}");
+        assert!(!shown.contains("SYNTHETIC"), "{shown}");
+        assert!(
+            shown.contains("[REDACTED]") && shown.contains("openai"),
+            "{shown}"
+        );
+    }
+}

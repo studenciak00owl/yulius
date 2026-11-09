@@ -830,7 +830,7 @@ const needClaude = (db, provider = 'anthropic') => {
   const kind = provider === 'openai' ? 'Codex' : 'Claude';
   if (!usableOf(db, provider)) fail(409, 'claude_account_required', `Connect a ${kind} account first: no ${kind} account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).`);
 };
-route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
+route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db) || usableOf(db, 'openai'), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
 // page that asked can be left before it answers (#581).

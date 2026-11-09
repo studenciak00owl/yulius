@@ -254,6 +254,36 @@ async fn me_says_whether_a_claude_account_is_connected() -> TestResult {
     Ok(())
 }
 
+/// SPEC-445: an instance whose only usable accounts are Codex's can still start agents (Codex
+/// tasks), so the UI does not hide the composer behind "Connect Claude".
+#[tokio::test]
+async fn a_codex_account_alone_lets_agents_start() -> TestResult {
+    let (h, alice) = world().await?;
+    h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("a-codex")?,
+            provider: Provider::OpenAi,
+            label: "Codex".into(),
+            credential: Some(h.app.deps.crypto.seal(b"{\"OPENAI_API_KEY\":\"sk-x\"}")?),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    let me = call(&h.router, Method::GET, "/api/me", None, &alice).await?;
+    assert_eq!(
+        me.body["instance"]["claude_connected"],
+        json!(true),
+        "{:?}",
+        me.body
+    );
+    Ok(())
+}
+
 /// CLA-004: a start by machinery that finds no account waits `waiting_capacity` and tells its
 /// viewers that no Claude account is connected and where to connect one; with an account that is
 /// only out of capacity it says that instead.
