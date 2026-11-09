@@ -1,11 +1,11 @@
 ---
 yulius-task: 49862d3b-f280-4116-a8eb-fc3b1a415393
-status: in-progress
+status: done
 ---
 
 # SPEC-445: Codex runs as a second harness again (fork only)
 
-Status: in progress
+Status: implemented (live Codex account checks pending)
 Date: 2026-11-09
 Owner: Yulius task #3 of the fork `studenciak00owl/yulius`
 Scope authorization: the fork's owner, verbatim: "Bring back Codex (OpenAI Codex CLI) as a second
@@ -73,7 +73,7 @@ refreshes during a run. A task never changes harness.
 - [x] Fake agent speaks Codex and integration tests cover a Codex task
 - [x] UI offers Codex in the composer, automations and Accounts
 - [x] Fork spec, ADR and documents describe the second harness
-- [ ] Independent review answered and branch pushed
+- [x] Independent review answered and branch pushed
 
 ## Acceptance criteria
 
@@ -114,4 +114,38 @@ refreshes during a run. A task never changes harness.
 
 ## Evidence
 
-(filled when done)
+Run on 2026-11-09 on branch `feat/codex-harness` (from `upstream/dev` `da0e55a4`).
+
+- Codex CLI 0.167.0 (`npm i @openai/codex@0.167.0`): `codex --help`, `codex exec --help`,
+  `codex login --help`, `codex resume --help` read; the rollout, hook, auth, MCP and shell-policy
+  formats checked in the `rust-v0.167.0` source (`codex-rs/{protocol,hooks,login,rollout,config,
+  core}`). The real CLI accepted Yulius's planned `-c` overrides (Yulius MCP stdio bridge, the
+  `sh -c` wrapper with `env_vars`, a bearer HTTP server, `model_reasoning_effort`), its
+  `config.toml` (file credentials, no update check, `[shell_environment_policy]`, the trusted
+  worktree) and `hooks.json` (`codex --no-daemon … mcp list` lists them; no parse error), and the
+  API-key `auth.json` (`codex login status`: "API key configured").
+- `cargo fmt --all -- --check`: clean. `cargo clippy --workspace --all-targets --locked -- -D
+  warnings`: clean.
+- Unit tests: `cargo test -p yulius-domain -p yulius-contracts -p yulius-harness -p yulius-app -p
+  fake-agent` and `cargo test -p yulius --lib`: all pass (Codex: observer, launch plan with the
+  executed `sh -c` wrapper, login and write-back rule, rollout paths and discovery, usage probe
+  against a local server, sessions link, no-follow reads, `CreateAccount` redaction).
+- Integration (`cargo test -p yulius --test main -- codex:: accounts:: agent_hooks:: claude_gate::
+  task_delete:: automations:: supervision:: pool_supervision:: subscription_pool account_usage::
+  run_metrics:: restart:: metrics_recount:: cockpit::`): 200 passed, 1 ignored, 1 failed under
+  load, `cockpit::an_idle_superagents_strays_are_reaped_after_the_bound` (timing-bound, Cockpit
+  code untouched), which then passed 5/5 alone. The 5 `codex::` tests pass 3 runs in a row.
+- e2e (`cd e2e && npx e2e run`, Node 22.23): `codex.e2e.ts` 3/3; `subscriptions`,
+  `subscription-names`, `automations`, `new-task`, `claude-connect`, `consistency`,
+  `onboarding-flow`: all pass. Full suite (77 files, run while cargo tests and the review ran):
+  873 passed, 1 skipped, 7 timed out (`git`, `intake`, `responsive` ×3, `subscriptions`,
+  `update`); those five files then passed alone, 91/91.
+- `python3 scripts/check_repository.py`: passed. `spec_check`: valid.
+- `scripts/dev security`: **not run** (exit 2: no `VIDOC_API_KEY` on this instance).
+- Independent review (fresh read-only session, four rounds): blocker (MCP wrapper without
+  `sh -c`), write-back trust, concurrent refreshes, nested `codex` hooks, discovery order, model
+  check, probe reset, sessions link, removal of `auth.json` and its races all fixed test-first;
+  final verdict APPROVE.
+- Not verified (needs a live Codex account): a real `codex login --device-auth`, a real rollout
+  and hook payloads of the TUI, token refresh and write-back, `wham/usage`, the usage-limit
+  error and a "Resume paused goal?" popup after a resume.
