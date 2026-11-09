@@ -1164,6 +1164,13 @@ impl App {
         only: Option<TaskStatus>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
+            // The Codex CLI is installed before the launch lock, so a first install does not hold
+            // other tasks' starts (SPEC-446 CLI-002); the launch asks again and reports a failure.
+            if let Ok(Some(task)) = self.deps.store.task(task_id).await
+                && task.harness == Harness::Codex
+            {
+                let _ = self.deps.harness.provide_codex().await;
+            }
             let guard = self.supervisor.launch.lock().await;
             let task = self
                 .deps
@@ -1329,6 +1336,11 @@ impl App {
             Harness::Codex => Some(self.codex_home(&sandbox.id, &account.id)?),
             Harness::ClaudeCode => None,
         };
+        // The Codex CLI Yulius provides, by its absolute path (SPEC-446 CLI-002).
+        let codex_cli = match harness {
+            Harness::Codex => self.deps.harness.provide_codex().await?,
+            Harness::ClaudeCode => None,
+        };
         let credential = match &codex_home {
             Some(_) => self
                 .keep_codex_refresh(&self.sandbox_dir(&sandbox.id), &account.id)
@@ -1474,6 +1486,7 @@ impl App {
             mcp,
             credential,
             codex_home: codex_home.as_ref().map(|(path, _)| path.clone()),
+            codex_program: codex_cli.as_ref().map(|cli| cli.program.clone()),
         })?;
         if let Some(session_id) = &stepped_back {
             self.step_back_transcript(&task.sandbox_id, &home, &worktree, session_id)
@@ -1540,6 +1553,8 @@ impl App {
                 readonly: std::iter::once(self.config.yulius_exe.clone())
                     .chain(self.config.contained_readonly.iter().cloned())
                     .chain(run_files)
+                    // The provided Codex CLI, at its own path (SPEC-446 CLI-002).
+                    .chain(codex_cli.iter().map(|cli| cli.dir.clone()))
                     .collect(),
                 binds: join
                     .iter()

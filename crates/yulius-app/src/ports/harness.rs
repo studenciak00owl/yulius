@@ -84,6 +84,9 @@ pub struct HarnessLaunch {
     pub credential: Secret,
     /// Codex home of the (sandbox, account) pair; required for Codex (SPEC-445 CDX-003).
     pub codex_home: Option<PathBuf>,
+    /// The Codex CLI Yulius provides, started by its absolute path (SPEC-446 CLI-002); `None`:
+    /// `codex` from `PATH`.
+    pub codex_program: Option<PathBuf>,
 }
 
 /// A user's Cockpit launch (SPEC-021): plain Claude Code outside any task.
@@ -278,8 +281,31 @@ pub trait OutputMasker: Send {
     fn finish(&mut self) -> Vec<u8>;
 }
 
+/// An agent CLI Yulius provides itself (SPEC-446 CLI-001): its program, started by this absolute
+/// path, and the directory holding it, which a contained run binds read-only at the same path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvidedCli {
+    /// The executable.
+    pub program: PathBuf,
+    /// Its release's directory.
+    pub dir: PathBuf,
+}
+
+/// What [`HarnessPort::provide_codex`] returns.
+pub type ProvideFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = AppResult<Option<ProvidedCli>>> + Send + 'a>,
+>;
+
 /// Harness operations.
 pub trait HarnessPort: Send + Sync {
+    /// The Codex CLI Codex runs and sign-ins start, installed first when needed (SPEC-446
+    /// CLI-002); `None`: the `codex` on the run's `PATH`.
+    ///
+    /// # Errors
+    /// `Upstream` when the pinned CLI cannot be installed and the host has no `codex` either.
+    fn provide_codex(&self) -> ProvideFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
     /// Plans a launch.
     ///
     /// # Errors

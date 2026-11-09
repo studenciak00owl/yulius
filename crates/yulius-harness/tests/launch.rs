@@ -44,6 +44,7 @@ fn claude_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         sandbox_home: PathBuf::from("/data/sandboxes/s1/home"),
         run_dir: PathBuf::from("/data/runs/a1"),
         codex_home: None,
+        codex_program: None,
         model: Some("claude-opus-4-1".into()),
         effort: Some("high".into()),
         contained,
@@ -1020,6 +1021,7 @@ fn codex_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         sandbox_home: PathBuf::from("/data/sandboxes/s1/home"),
         run_dir: PathBuf::from("/data/runs/a1"),
         codex_home: Some(PathBuf::from("/data/sandboxes/s1/codex/acc-1")),
+        codex_program: None,
         model: None,
         effort: Some("xhigh".into()),
         contained,
@@ -1028,6 +1030,34 @@ fn codex_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         mcp_servers: servers(),
         credential: Credential::CodexAuthJson(Secret::new(CODEX_AUTH.as_bytes().to_vec())),
     }
+}
+
+/// SPEC-446 CLI-002: the Codex CLI Yulius provides is started by its absolute path; a Claude
+/// run ignores it.
+#[test]
+fn a_provided_codex_cli_is_started_by_its_path() -> TestResult {
+    let program = PathBuf::from("/data/codex-cli/0.167.0-linux-x64/bin/codex");
+    let mut request = codex_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        true,
+    );
+    request.codex_program = Some(program.clone());
+    let plan = plan_launch(&request)?;
+    assert_eq!(plan.argv.first().map(String::as_str), program.to_str());
+    assert_eq!(plan.argv.get(1).map(String::as_str), Some("--no-daemon"));
+    let mut relative = codex_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        true,
+    );
+    relative.codex_program = Some(PathBuf::from("bin/codex"));
+    assert!(plan_launch(&relative).is_err(), "only an absolute path");
+    Ok(())
 }
 
 /// SPEC-445 CDX-002: a new Codex session is the native TUI in the worktree, kept in the spawned

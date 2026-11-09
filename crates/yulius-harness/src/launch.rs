@@ -177,6 +177,9 @@ pub struct LaunchRequest {
     pub run_dir: PathBuf,
     /// Codex home of the (sandbox, account) pair; required for Codex (SPEC-445 CDX-003).
     pub codex_home: Option<PathBuf>,
+    /// The Codex CLI Yulius provides, an absolute path (SPEC-446 CLI-002); `None`: [`CODEX_PROGRAM`]
+    /// from `PATH`.
+    pub codex_program: Option<PathBuf>,
     /// Model override.
     pub model: Option<String>,
     /// Reasoning effort override.
@@ -726,6 +729,13 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         .as_ref()
         .ok_or(LaunchError::MissingCodexHome)?;
     let worktree = utf8(&request.worktree, "worktree")?;
+    let program = match &request.codex_program {
+        Some(path) => {
+            check(path.is_absolute(), "codex_program")?;
+            utf8(path, "codex_program")?.to_owned()
+        }
+        None => CODEX_PROGRAM.to_owned(),
+    };
 
     // The same hook client as Claude Code's (`yulius hook codex <event>`); the turn boundaries may
     // be held while no subscription has capacity (ADR-17).
@@ -765,7 +775,7 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     // `--no-daemon`: the session stays inside the process Yulius spawned and supervises; Codex
     // otherwise may run it in a shared background server (0.167 `daemon_auto_start`).
     let mut argv = vec![
-        CODEX_PROGRAM.to_owned(),
+        program,
         "--no-daemon".into(),
         "-C".into(),
         worktree.to_owned(),

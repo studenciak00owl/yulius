@@ -1,15 +1,18 @@
 //! [`HarnessPort`] over `yulius-harness` (Claude Code 2.1.292 and Codex 0.167.0 structures).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, McpAttachment, Observation,
-    OutputMasker, SessionMode, TranscriptWatch, UsageSnapshot, WatchFrom,
+    OutputMasker, ProvideFuture, SessionMode, TranscriptWatch, UsageSnapshot, WatchFrom,
 };
 use yulius_app::ports::session::{Containment, LaunchPlan, PlannedFile};
 use yulius_domain::harness::Harness;
+
+use crate::wiring::codex_cli::CodexCli;
 use yulius_domain::time::Timestamp;
 use yulius_harness::launch::{
     self, Credential, LaunchMode, LaunchRequest, McpServerSpec, McpTransport,
@@ -25,6 +28,10 @@ pub struct HarnessAdapter {
     pub yulius_exe: PathBuf,
     /// Internal listener URL.
     pub yulius_url: String,
+    /// The Codex CLI Yulius provides (SPEC-446 CLI-001); `None`: runs use `codex` from `PATH`.
+    pub codex_cli: Option<Arc<CodexCli>>,
+    /// The host's own `codex`, used when the provided one cannot be installed.
+    pub host_codex: Option<PathBuf>,
 }
 
 impl HarnessAdapter {
@@ -34,7 +41,18 @@ impl HarnessAdapter {
         Self {
             yulius_exe,
             yulius_url: yulius_url.into(),
+            codex_cli: None,
+            host_codex: None,
         }
+    }
+
+    /// Codex runs and sign-ins start the CLI `cli` provides, or the host's `codex` while it
+    /// cannot (SPEC-446 CLI-002).
+    #[must_use]
+    pub fn with_codex_cli(mut self, cli: Arc<CodexCli>) -> Self {
+        self.codex_cli = Some(cli);
+        self.host_codex = crate::wiring::sandbox::which(launch::CODEX_PROGRAM);
+        self
     }
 }
 
@@ -103,6 +121,26 @@ fn mcp_specs(mcp: &[McpAttachment]) -> (Vec<McpServerSpec>, Vec<(String, String)
 }
 
 impl HarnessPort for HarnessAdapter {
+    fn provide_codex(&self) -> ProvideFuture<'_> {
+        Box::pin(async move {
+            let Some(cli) = &self.codex_cli else {
+                return Ok(None);
+            };
+            match cli.ensure().await {
+                Ok(provided) => Ok(Some(provided)),
+                Err(error) if self.host_codex.is_some() => {
+                    tracing::warn!(%error, "the Codex CLI could not be installed; runs use the host's codex");
+                    Ok(None)
+                }
+                Err(error) => Err(AppError::Upstream(format!(
+                    "the Codex CLI {} could not be installed ({error}), and this host has no \
+                     `codex` of its own",
+                    yulius_domain::agent_cli::codex::VERSION
+                ))),
+            }
+        })
+    }
+
     fn plan(&self, l: &HarnessLaunch) -> AppResult<HarnessPlan> {
         let (mcp_servers, extra_secrets) = mcp_specs(&l.mcp);
         let credential = match l.harness {
@@ -135,6 +173,7 @@ impl HarnessPort for HarnessAdapter {
             sandbox_home: l.sandbox_home.clone(),
             run_dir: l.run_dir.clone(),
             codex_home: l.codex_home.clone(),
+            codex_program: l.codex_program.clone(),
             model: l.model.clone(),
             effort: l.effort.clone(),
             contained: l.contained,
@@ -652,6 +691,7 @@ mod tests {
             sandbox_home: PathBuf::from("/h"),
             run_dir: PathBuf::from("/r"),
             codex_home: None,
+            codex_program: None,
             model: None,
             effort: None,
             contained: false,
@@ -745,6 +785,7 @@ mod tests {
             mcp: Vec::new(),
             credential: Secret("token".into()),
             codex_home: None,
+            codex_program: None,
         })?;
         assert_eq!(style(&home.join(".claude"))?, "Concise");
         let config = dir.path().join("cockpit");
