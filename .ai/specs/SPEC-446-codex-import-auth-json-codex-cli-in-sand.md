@@ -1,11 +1,11 @@
 ---
 yulius-task: 4811641f-fe73-44ca-89d6-b6262b0fafca
-status: in-progress
+status: done
 ---
 
 # SPEC-446: Codex sign-in by imported auth.json, and the Codex CLI provided to sandboxes (fork only)
 
-Status: in progress
+Status: implemented (live Codex account checks pending)
 Date: 2026-11-09
 Owner: Yulius task #4 of the fork `studenciak00owl/yulius`
 Extends [SPEC-445](SPEC-445-fork-codex-harness.md) (requirements CDX-011 and CDX-012 are kept
@@ -52,10 +52,10 @@ Claude Code.
 - [x] Accounts are created or re-signed by importing auth.json
 - [x] An imported sign-in reaches the sandbox Codex home and is written back
 - [x] Add subscription offers Import auth.json for Codex
-- [ ] Yulius installs the pinned Codex CLI from npm
-- [ ] Codex runs and sign-ins use the provided Codex CLI
-- [ ] SPEC-445, ADR and docs describe import and the provided CLI
-- [ ] Independent review answered and branch pushed
+- [x] Yulius installs the pinned Codex CLI from npm
+- [x] Codex runs and sign-ins use the provided Codex CLI
+- [x] SPEC-445, ADR and docs describe import and the provided CLI
+- [x] Independent review answered and branch pushed
 
 ## Acceptance criteria
 
@@ -87,3 +87,39 @@ Claude Code.
   which starts a terminal sign-in and answers with its id.
 - The Codex CLI is pinned by version and sha512 in the source instead of followed on a channel
   (ADR-0289): the harness is checked against one release.
+
+## Evidence
+
+Run on 2026-11-09/10 on `feat/codex-harness` (from `e3faca10`).
+
+- `cargo fmt --all -- --check`: clean. `cargo clippy -j2 --workspace --all-targets --locked -- -D
+  warnings`: clean. `python3 scripts/check_repository.py`: passed. `spec_check`: valid.
+- Unit: `cargo test -p yulius-domain -p yulius-contracts -p yulius-harness -p yulius-app -p
+  fake-agent` and `cargo test -p yulius --lib`: 1398 passed, 0 failed (`validate_codex_import`,
+  the pinned release's data, the launch plan's absolute program, redacted `Debug`, the export
+  leaving `codex-cli` out).
+- Integration (`cargo test -p yulius --test main -- codex:: codex_cli:: accounts:: agent_hooks::
+  claude_gate:: task_delete:: automations:: supervision:: pool_supervision:: subscription_pool
+  account_usage:: run_metrics:: restart:: claude_updates:: cockpit:: instance`): 241 passed,
+  0 failed, 2 ignored. New: import at creation and into an account (refusals, audit without the
+  content, a running sign-in cancelled and its file not taken), an imported sign-in in the run's
+  Codex home and its refresh written back, the installer (once, single-flight, refused tarballs,
+  umask 077, earlier releases pruned, a failure not retried by every start), the device sign-in
+  and a Codex run starting the provided program, a contained run reading it through a real
+  bubblewrap bind while the data directory stays hidden, a start without a CLI failing before
+  any spawn.
+- Live npm (`codex_cli::the_real_pinned_release_installs_from_npm`, `--ignored`): the real
+  `@openai/codex@0.167.0-linux-x64` matched the pinned sha512, unpacked, and `bin/codex
+  --version` printed `codex-cli 0.167.0` (108 s).
+- e2e (`npx e2e run tests/codex.e2e.ts tests/subscriptions.e2e.ts`): 21 passed (import pasted
+  and from a file, an API-key file refused with the reason, the card's import; no WCAG
+  violations).
+- Independent review (fresh read-only session): round 1 REQUEST_CHANGES (2 major, 7 minor), all
+  answered test-first in `79e88062` except the host-fallback mismatch and the relogin window,
+  recorded in ADR-0289's consequences. Round 2 could not run to its end (the reviewer hit the
+  account's API limit); its checks were done by hand: `start_run_if` is the only way into
+  `launch_attempt` and installs before the lock.
+- Not verified (needs a live Codex account): a real laptop `auth.json` imported and used by a
+  run, its refresh by Codex and write-back, and the provided CLI inside a namespace-isolated
+  sandbox of this instance.
+
