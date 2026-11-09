@@ -2,7 +2,9 @@
 
 One Rust binary, `yulius`, serves the web UI and API, supervises detached `ptyhost` processes
 that own Claude Code sessions inside per-sandbox containment, and talks to GitHub and
-Anthropic. The detailed contracts are in
+Anthropic. This fork also runs Codex sessions on OpenAI accounts, each task on one harness for
+its whole life ([SPEC-445](../.ai/specs/SPEC-445-fork-codex-harness.md),
+[decision 0288](decisions/0288-fork-codex-returns-as-a-second-harness.md); see "Codex" below). The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
@@ -29,7 +31,7 @@ flowchart LR
   CI -->|"jobs in its ci/ leaf, job slots"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
-    PH --> AG["claude TUI"]
+    PH --> AG["claude or codex TUI"]
     AG -->|"/run/yulius/docker"| DF["Docker front"]
     DF --> DE["Docker engine (on demand)"]
   end
@@ -41,8 +43,31 @@ flowchart LR
   AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
   APP <--> GH["GitHub App + REST"]
   AG <--> AN["Anthropic"]
+  AG <--> OA["OpenAI (Codex)"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
 ```
+
+## Codex (fork)
+
+A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`.
+The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
+`hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
+`codex/sessions`. After the run, a refreshed `auth.json` goes back into the vault.
+
+```mermaid
+flowchart LR
+  ACC["openai account (vault: auth.json)"] -->|"written before each run"| HOME["sandbox/codex/account: auth.json, config.toml, hooks.json"]
+  HOME -->|"sessions link"| SESS["sandbox/codex/sessions (rollouts)"]
+  CX["codex TUI (ptyhost)"] -->|"CODEX_HOME"| HOME
+  CX -->|"rollout JSONL"| SESS
+  CX -->|"yulius hook codex, yulius mcp"| INT2["Internal listener"]
+  SESS -->|"turns, tokens, rate limits, limit"| SUP2["Supervisor"]
+  SUP2 -->|"newer last_refresh"| ACC
+```
+
+Rotation picks only accounts of the task's provider, so a Codex task moves between Codex accounts
+by `codex resume <id>` and waits when none has capacity. A Codex account signs in with `codex login
+--device-auth` in the login terminal or takes an OpenAI API key.
 
 ## Layers and crates
 

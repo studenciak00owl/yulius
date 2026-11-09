@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-09
 
+- Codex runs as a second harness in this fork (SPEC-445, ADR-0288, fork task #3; upstream
+  removed it on 2026-10-08). A task or automation can run Codex CLI 0.167 instead of Claude Code:
+  the native Codex TUI in the task terminal, on Codex accounts added from Subscriptions (ChatGPT
+  sign-in by device code, or an OpenAI API key). Each account has its own Codex home per sandbox;
+  Yulius reads the rollout for turns, tokens, rate limits and usage limits, moves a task at its
+  limit to another Codex account by native resume (never to Claude), resumes it after a restart,
+  and keeps the credentials Codex refreshed. The composer's model menu has Codex; automations
+  choose their agent.
 - Tasks hear what happens to their pull request (SPEC-444, ADR-0287, task #426). In quartio-v2 on
   2026-11-08, tasks sat 10 to 60 minutes after a red run, a conflict or a green pull request that
   was not merging, until someone nudged them: their only channel was a `yulius wait` they had to

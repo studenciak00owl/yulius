@@ -5,6 +5,11 @@ Cezar and Open Mercato Cloud. It runs native Claude Code sessions, one per task,
 contained sandboxes on a single Linux VM, and enforces engineering discipline around them.
 Yulius develops itself with Yulius.
 
+This fork (`studenciak00owl/yulius`) also runs native Codex CLI sessions on Codex (OpenAI)
+accounts, chosen per task or automation; a task keeps its agent for life
+([SPEC-445](../.ai/specs/SPEC-445-fork-codex-harness.md), reversing upstream's `F 2026-10-08` for
+this fork only).
+
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
 

@@ -65,14 +65,15 @@ refreshes during a run. A task never changes harness.
 ## Plan
 
 - [x] Codex harness and OpenAI provider accepted by the domain
-- [ ] Codex rollout observed with synthetic 0.167 fixtures
-- [ ] Codex launch plan checked against Codex CLI 0.167
-- [ ] Codex homes, session discovery and auth write-back in the supervisor
-- [ ] Codex hooks reach Yulius like Claude Code's
-- [ ] Codex accounts sign in by device code or API key, with usage windows
-- [ ] Fake agent speaks Codex and integration tests cover a Codex task
-- [ ] UI offers Codex in the composer, automations and Accounts
-- [ ] Fork spec, ADR and documents describe the second harness
+- [x] Codex rollout observed with synthetic 0.167 fixtures
+- [x] Codex launch plan checked against Codex CLI 0.167
+- [x] Codex homes, session discovery and auth write-back in the supervisor
+- [x] Codex hooks reach Yulius like Claude Code's
+- [x] Codex accounts sign in by device code or API key, with usage windows
+- [x] Fake agent speaks Codex and integration tests cover a Codex task
+- [x] UI offers Codex in the composer, automations and Accounts
+- [x] Fork spec, ADR and documents describe the second harness
+- [ ] Independent review answered and branch pushed
 
 ## Acceptance criteria
 
