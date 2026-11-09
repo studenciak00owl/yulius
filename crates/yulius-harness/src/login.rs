@@ -62,6 +62,12 @@ pub enum CodexAuthError {
     /// Neither an API key nor ChatGPT tokens.
     #[error("the Codex credentials hold neither an API key nor sign-in tokens")]
     NoCredential,
+    /// An imported file that is not a ChatGPT sign-in (`auth_mode` is not `chatgpt`).
+    #[error("the file is not a ChatGPT sign-in of Codex (its auth_mode is not \"chatgpt\")")]
+    NotChatGpt,
+    /// An imported ChatGPT sign-in without all of its tokens or its account.
+    #[error("the ChatGPT sign-in lacks its id_token, access_token, refresh_token or account_id")]
+    MissingTokens,
 }
 
 /// Checks a Codex `auth.json`: a bounded JSON object holding a non-empty `OPENAI_API_KEY` or
@@ -86,6 +92,38 @@ pub fn validate_codex_auth(auth_json: &[u8]) -> Result<(), CodexAuthError> {
         Ok(())
     } else {
         Err(CodexAuthError::NoCredential)
+    }
+}
+
+/// Checks an `auth.json` imported from a `codex login` made elsewhere (SPEC-445 CDX-011): a
+/// [`validate_codex_auth`] credential with `auth_mode` `chatgpt` and non-empty `tokens.id_token`,
+/// `access_token`, `refresh_token` and `account_id`, which [`codex_auth_replaces`] needs to take
+/// its refreshes back.
+///
+/// # Errors
+/// [`CodexAuthError`] saying what is wrong, never quoting the file.
+pub fn validate_codex_import(auth_json: &[u8]) -> Result<(), CodexAuthError> {
+    validate_codex_auth(auth_json)?;
+    let Ok(Value::Object(auth)) = serde_json::from_slice::<Value>(auth_json) else {
+        return Err(CodexAuthError::NotJson);
+    };
+    if auth.get("auth_mode").and_then(Value::as_str) != Some("chatgpt") {
+        return Err(CodexAuthError::NotChatGpt);
+    }
+    let tokens = auth.get("tokens").and_then(Value::as_object);
+    let filled = |name: &str| {
+        tokens
+            .and_then(|t| t.get(name))
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty())
+    };
+    if ["id_token", "access_token", "refresh_token", "account_id"]
+        .into_iter()
+        .all(filled)
+    {
+        Ok(())
+    } else {
+        Err(CodexAuthError::MissingTokens)
     }
 }
 

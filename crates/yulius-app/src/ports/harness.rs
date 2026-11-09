@@ -367,6 +367,9 @@ pub trait HarnessPort: Send + Sync {
     ) -> AppResult<Option<(String, PathBuf)>>;
     /// Why a Codex `auth.json` is not a usable credential, `None` when it is (SPEC-445 CDX-005).
     fn codex_auth_problem(&self, auth_json: &[u8]) -> Option<String>;
+    /// Why an imported `auth.json` is not a full ChatGPT sign-in of Codex, `None` when it is
+    /// (SPEC-445 CDX-011). The reason never quotes the file.
+    fn codex_import_problem(&self, auth_json: &[u8]) -> Option<String>;
     /// The `auth.json` of an OpenAI API key, `None` when the key is not one.
     fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>>;
     /// Whether the `auth.json` a Codex run left (`fresh`, written where the agent can write)

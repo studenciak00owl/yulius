@@ -28,7 +28,7 @@ use yulius_app::ports::session::{
     AttachedRun, Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal,
     RunWelcome, RunWriter, SessionHost, SpawnedRun,
 };
-use yulius_app::ports::store::{AccountStore, TaskStore};
+use yulius_app::ports::store::{AccountStore, AuditStore, TaskStore};
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId, UserId};
@@ -656,6 +656,204 @@ async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
         Some(1),
         "{}",
         after.body
+    );
+    Ok(())
+}
+
+/// A ChatGPT `auth.json` like `codex login` writes on a laptop, refreshed at `last_refresh`.
+fn imported_auth(access: &str, last_refresh: &str) -> String {
+    format!(
+        r#"{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{{"id_token":"h.e30.s","access_token":"{access}","refresh_token":"SYNTHETIC-import-refresh","account_id":"acc-synthetic"}},"last_refresh":"{last_refresh}"}}"#
+    )
+}
+
+/// The accounts listed to an administrator.
+async fn listed(s: &Setup) -> Result<Value, Box<dyn std::error::Error>> {
+    Ok(call(
+        &s.h.router,
+        Method::GET,
+        "/api/admin/accounts",
+        None,
+        &s.admin,
+    )
+    .await?
+    .body)
+}
+
+/// SPEC-445 CDX-011: an `auth.json` of a `codex login` made elsewhere makes a Codex account at
+/// once, sealed as the device sign-in's file is; it is never returned, logged in the audit or
+/// accepted when it is not a full ChatGPT sign-in.
+#[tokio::test]
+async fn a_codex_account_can_be_added_by_importing_its_auth_file() -> TestResult {
+    let s = setup().await?;
+    let auth = imported_auth("SYNTHETIC-import-access", "2026-11-09T10:00:00Z");
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "openai", "label": "Codex laptop", "auth_json": auth})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.body["account"]["status"], "ok");
+    assert_eq!(r.body["account"]["provider"], "openai");
+    assert!(r.body.get("login_id").is_none(), "{}", r.body);
+    assert!(!r.body.to_string().contains("SYNTHETIC"), "{}", r.body);
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
+    let id = r.body["account"]["id"].as_str().ok_or("id")?.to_owned();
+    assert_eq!(stored_credential(&s, &id).await?, auth);
+    let audit = s.h.store.audit_details(&id, "account.created", 5).await?;
+    assert!(audit.iter().any(|d| d.contains("auth_json")), "{audit:?}");
+    assert!(audit.iter().all(|d| !d.contains("SYNTHETIC")), "{audit:?}");
+    assert!(!listed(&s).await?.to_string().contains("SYNTHETIC"));
+
+    let api_key_file = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-SYNTHETIC0123456789abcdef"}"#;
+    let no_refresh = auth.replace(r#""refresh_token":"SYNTHETIC-import-refresh","#, "");
+    for body in [
+        json!({"provider": "openai", "label": "Key file", "auth_json": api_key_file}),
+        json!({"provider": "openai", "label": "No refresh", "auth_json": no_refresh}),
+        json!({"provider": "openai", "label": "Not JSON", "auth_json": "SYNTHETIC {"}),
+        json!({"provider": "anthropic", "label": "Claude file", "auth_json": auth}),
+        json!({"provider": "openai", "label": "Both", "auth_json": auth,
+               "api_key": "sk-proj-SYNTHETIC0123456789abcdefghij"}),
+    ] {
+        let refused = call(
+            &s.h.router,
+            Method::POST,
+            "/api/admin/accounts",
+            Some(body.clone()),
+            &s.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert!(
+            !refused.body.to_string().contains("SYNTHETIC"),
+            "{}",
+            refused.body
+        );
+    }
+    assert_eq!(listed(&s).await?.as_array().map(Vec::len), Some(1));
+    Ok(())
+}
+
+/// SPEC-445 CDX-011: an existing Codex account signs in again by importing a new `auth.json`:
+/// the file replaces its credential at once, a sign-in running for it is cancelled, the audit
+/// names the import without its content, and a file that is not a ChatGPT sign-in or an account
+/// of Claude is refused without changing anything.
+#[tokio::test]
+async fn a_codex_accounts_sign_in_is_replaced_by_an_imported_auth_file() -> TestResult {
+    let s = setup().await?;
+    // A device sign-in that never completes is running for the account.
+    s.host.push(Script {
+        chunks: vec!["Enter this one-time code\n".into()],
+        gated: true,
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (id, login_id) = create(&s, "openai", "Codex #3").await?;
+    let auth = imported_auth("SYNTHETIC-new-access", "2026-11-09T12:00:00Z");
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{id}/import"),
+        Some(json!({"auth_json": auth})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["account"]["status"], "ok");
+    assert!(r.body.get("login_id").is_none(), "{}", r.body);
+    assert!(!r.body.to_string().contains("SYNTHETIC"), "{}", r.body);
+    assert_eq!(stored_credential(&s, &id).await?, auth);
+    let settled = account_settled(&mut events, &id).await?;
+    assert_eq!(settled["status"], "ok", "{settled}");
+    // A cancelled sign-in ends and wipes its temporary home.
+    let cancelled = tokio::time::timeout(Duration::from_secs(10), async {
+        while login_dir(&s, &login_id).exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(cancelled.is_ok(), "the running sign-in was not cancelled");
+    s.host.release.add_permits(1);
+    assert_eq!(stored_credential(&s, &id).await?, auth, "still the import");
+    let audit = s.h.store.audit_details(&id, "account.imported", 5).await?;
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert!(audit.iter().all(|d| !d.contains("SYNTHETIC")), "{audit:?}");
+
+    let not_chatgpt = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-SYNTHETIC0123456789abcdef"}"#;
+    for body in [
+        json!({"auth_json": not_chatgpt}),
+        json!({"auth_json": "SYNTHETIC"}),
+        json!({"auth_json": ""}),
+    ] {
+        let refused = call(
+            &s.h.router,
+            Method::POST,
+            &format!("/api/admin/accounts/{id}/import"),
+            Some(body.clone()),
+            &s.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert!(!refused.body.to_string().contains("SYNTHETIC"));
+    }
+    assert_eq!(stored_credential(&s, &id).await?, auth, "unchanged");
+
+    // A Claude account cannot take a Codex file; an unknown account is not found.
+    s.host.push(Script {
+        chunks: vec![format!("token: {TOKEN}\r\n")],
+        exit: Some(0),
+        ..Script::default()
+    });
+    let (claude, _) = create(&s, "anthropic", "Claude #9").await?;
+    let refused = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{claude}/import"),
+        Some(json!({"auth_json": auth})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
+    let missing = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts/missing/import",
+        Some(json!({"auth_json": auth})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.body);
+    // Only an instance administrator imports.
+    let anonymous = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{id}/import"),
+        Some(json!({"auth_json": auth})),
+        &Creds::default(),
+    )
+    .await?;
+    assert!(
+        anonymous.status == StatusCode::UNAUTHORIZED || anonymous.status == StatusCode::FORBIDDEN,
+        "{}",
+        anonymous.status
     );
     Ok(())
 }

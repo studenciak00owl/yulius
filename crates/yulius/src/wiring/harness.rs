@@ -306,6 +306,12 @@ impl HarnessPort for HarnessAdapter {
             .map(|e| e.to_string())
     }
 
+    fn codex_import_problem(&self, auth_json: &[u8]) -> Option<String> {
+        login::validate_codex_import(auth_json)
+            .err()
+            .map(|e| e.to_string())
+    }
+
     fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>> {
         login::valid_openai_api_key(api_key).then(|| login::codex_api_key_auth(api_key))
     }

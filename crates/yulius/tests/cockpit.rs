@@ -1392,6 +1392,9 @@ impl HarnessPort for RecordingHarness {
     fn codex_auth_problem(&self, auth_json: &[u8]) -> Option<String> {
         self.inner.codex_auth_problem(auth_json)
     }
+    fn codex_import_problem(&self, auth_json: &[u8]) -> Option<String> {
+        self.inner.codex_import_problem(auth_json)
+    }
     fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>> {
         self.inner.codex_api_key_auth(api_key)
     }

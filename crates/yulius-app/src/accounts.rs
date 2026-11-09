@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 use yulius_contracts::api::admin::{
-    AccountLoginStarted, AccountUsageView, AccountView, CreateAccount, TokenTotalsView,
-    UpdateAccount, UsageWindowView,
+    AccountLoginStarted, AccountUsageView, AccountView, CreateAccount, ImportAccountAuth,
+    TokenTotalsView, UpdateAccount, UsageWindowView,
 };
 use yulius_contracts::events::UiEvent;
 use yulius_contracts::terminal::TerminalServerMsg;
@@ -775,17 +775,33 @@ impl App {
             AppError::Invalid("provider must be anthropic (Claude) or openai (Codex)".into())
         })?;
         let label = validate_label(&req.label)?;
-        // An API key is a Codex account's credential at once: no sign-in runs (CDX-005).
-        let api_key_auth = match req.api_key.as_deref().map(str::trim) {
-            None | Some("") => None,
-            Some(_) if provider != Provider::OpenAi => {
+        // An API key or an imported `auth.json` is a Codex account's credential at once: no
+        // sign-in runs (CDX-005, CDX-011).
+        let api_key = req
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty());
+        let auth_json = req.auth_json.as_deref().filter(|a| !a.trim().is_empty());
+        let immediate = match (api_key, auth_json) {
+            (None, None) => None,
+            (Some(_), Some(_)) => {
                 return Err(AppError::Invalid(
-                    "an API key is only for an openai (Codex) account".into(),
+                    "give either an API key or an auth.json, not both".into(),
                 ));
             }
-            Some(key) => Some(self.deps.harness.codex_api_key_auth(key).ok_or_else(|| {
-                AppError::Invalid("the API key is not an OpenAI API key (sk-…)".into())
-            })?),
+            _ if provider != Provider::OpenAi => {
+                return Err(AppError::Invalid(
+                    "an API key or an auth.json is only for an openai (Codex) account".into(),
+                ));
+            }
+            (Some(key), None) => Some((
+                self.deps.harness.codex_api_key_auth(key).ok_or_else(|| {
+                    AppError::Invalid("the API key is not an OpenAI API key (sk-…)".into())
+                })?,
+                "api_key",
+            )),
+            (None, Some(auth)) => Some((self.codex_import(auth)?, "auth_json")),
         };
         let store = &self.deps.store;
         let now = self.now();
@@ -803,7 +819,7 @@ impl App {
             email_checked_at: None,
         };
         store.insert_account(&account).await?;
-        if let Some(mut auth) = api_key_auth {
+        if let Some((mut auth, source)) = immediate {
             let sealed = self.deps.crypto.seal(&auth);
             auth.zeroize();
             let stored = match sealed {
@@ -825,7 +841,7 @@ impl App {
                     "account.created",
                     Some(account.id.as_str()),
                     Some(&format!(
-                        "provider={} label={label} api_key",
+                        "provider={} label={label} {source}",
                         provider.as_str()
                     )),
                 )
@@ -960,6 +976,72 @@ impl App {
                 Some(&account.label),
             )
             .await
+    }
+
+    /// The bytes of an imported `auth.json`, checked to be a full ChatGPT sign-in of Codex
+    /// (CDX-011); the refusal never quotes it.
+    fn codex_import(&self, auth_json: &str) -> AppResult<Vec<u8>> {
+        let bytes = auth_json.trim().as_bytes().to_vec();
+        match self.deps.harness.codex_import_problem(&bytes) {
+            None => Ok(bytes),
+            Some(problem) => {
+                scrub(Some(bytes));
+                Err(AppError::Invalid(format!(
+                    "the auth.json cannot be imported: {problem}"
+                )))
+            }
+        }
+    }
+
+    /// Signs a Codex account in again from an imported `auth.json` (SPEC-445 CDX-011): it
+    /// replaces the credential at once and the account is `ok`; a sign-in running for it is
+    /// cancelled. The audit names the import, never its content.
+    ///
+    /// # Errors
+    /// `Forbidden`, `NotFound`, `Invalid` for a Claude account or a file that is not a full
+    /// ChatGPT sign-in.
+    pub async fn import_account_auth(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        req: &ImportAccountAuth,
+    ) -> AppResult<AccountLoginStarted> {
+        self.require_instance_admin(ctx)?;
+        let account = self.load_account(id).await?;
+        if account.provider != Provider::OpenAi {
+            return Err(AppError::Invalid(
+                "an auth.json is only for an openai (Codex) account".into(),
+            ));
+        }
+        let mut auth = self.codex_import(&req.auth_json)?;
+        let sealed = self.deps.crypto.seal(&auth);
+        auth.zeroize();
+        let sealed = sealed?;
+        // A sign-in still running would replace the import when it ends.
+        if let Some(active) = self.active_login(&account.id) {
+            active.request_cancel();
+        }
+        let store = &self.deps.store;
+        store
+            .set_account_credential(&account.id, &sealed, AccountStatus::Ok, self.now())
+            .await?;
+        store
+            .audit(
+                self.now(),
+                &actor(ctx),
+                "account.imported",
+                Some(account.id.as_str()),
+                Some("auth_json"),
+            )
+            .await?;
+        let account = self.load_account(account.id.as_str()).await?;
+        let view = account_view(&account, &self.working_attempts().await?);
+        self.publish_account(view.clone());
+        self.capacity_changed();
+        Ok(AccountLoginStarted {
+            account: view,
+            login_id: None,
+        })
     }
 
     /// Starts a new login for an existing account (replacing a running one).

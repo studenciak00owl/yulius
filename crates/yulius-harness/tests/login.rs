@@ -7,7 +7,7 @@ use yulius_domain::time::Timestamp;
 use yulius_harness::login::{
     CODEX_FILE_STORE_CONFIG, CodexAuthError, MASK, TokenMasker, claude_setup_token_argv,
     codex_api_key_auth, codex_auth_replaces, codex_device_login_argv, extract_claude_oauth_token,
-    newer_codex_auth, valid_openai_api_key, validate_codex_auth,
+    newer_codex_auth, valid_openai_api_key, validate_codex_auth, validate_codex_import,
 };
 
 const TOKEN: &str = "sk-ant-oat01-SYNTH_abc-DEF0123456789xyzSYNTHETICtoken";
@@ -118,6 +118,52 @@ fn codex_credentials_are_validated() {
     );
     let huge = vec![b' '; 1024 * 1024 + 1];
     assert_eq!(validate_codex_auth(&huge), Err(CodexAuthError::Size));
+}
+
+/// SPEC-445 CDX-011: an imported `auth.json` must be a ChatGPT sign-in of Codex with all its
+/// tokens and its account, so its refreshes can be written back; anything else is refused with a
+/// reason that never quotes the file.
+#[test]
+fn only_a_chatgpt_sign_in_is_imported() {
+    let full = br#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-a","refresh_token":"SYNTHETIC-r","account_id":"acc"},"last_refresh":"2026-11-01T10:00:00Z"}"#;
+    assert_eq!(validate_codex_import(full), Ok(()));
+    let without = |field: &str| {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(full).unwrap_or(serde_json::Value::Null);
+        if let Some(tokens) = value["tokens"].as_object_mut() {
+            tokens.remove(field);
+        }
+        serde_json::to_vec(&value).unwrap_or_default()
+    };
+    for field in ["id_token", "access_token", "refresh_token", "account_id"] {
+        assert_eq!(
+            validate_codex_import(&without(field)),
+            Err(CodexAuthError::MissingTokens),
+            "{field}"
+        );
+    }
+    let blank = String::from_utf8_lossy(full).replace("SYNTHETIC-r", "");
+    assert_eq!(
+        validate_codex_import(blank.as_bytes()),
+        Err(CodexAuthError::MissingTokens)
+    );
+    assert_eq!(
+        validate_codex_import(&codex_api_key_auth("sk-SYNTHETIC0123456789abcdef")),
+        Err(CodexAuthError::NotChatGpt)
+    );
+    let no_mode = String::from_utf8_lossy(full).replace(r#""auth_mode":"chatgpt","#, "");
+    assert_eq!(
+        validate_codex_import(no_mode.as_bytes()),
+        Err(CodexAuthError::NotChatGpt)
+    );
+    assert_eq!(validate_codex_import(b""), Err(CodexAuthError::Size));
+    assert_eq!(
+        validate_codex_import(b"{\"auth_mode\":"),
+        Err(CodexAuthError::NotJson)
+    );
+    for error in [CodexAuthError::NotChatGpt, CodexAuthError::MissingTokens] {
+        assert!(!error.to_string().contains("SYNTHETIC"));
+    }
 }
 
 /// SPEC-445 CDX-005: an API key is checked before it is stored, and stored as Codex writes it.
