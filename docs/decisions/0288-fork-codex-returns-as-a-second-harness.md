@@ -30,7 +30,12 @@ resume after a restart. 715 commits landed on `dev` since the removal; reverting
   the sandbox's shared `<sandbox>/codex/sessions`, so a resumed session finds its rollout on any
   Codex account. Yulius writes the home's `auth.json`, `config.toml` (file credential store,
   update check off, the worktree trusted) and `hooks.json` before each run through handles opened
-  without following links, and after the run keeps the `auth.json` whose `last_refresh` is newer.
+  without following links. The home's `auth.json` is the agent's to write, so it goes back into
+  the vault only as a genuine refresh: the same ChatGPT account, a newer `last_refresh` not dated
+  ahead of the server's clock, never for an API-key account. A newer copy another run of the
+  account left is kept at the next launch instead of being overwritten, and the file is removed
+  once no run of the account is left in the sandbox. The agent's shell does not inherit
+  `CODEX_HOME`, so a `codex` it runs does not get Yulius's hooks.
 - The run is `codex --no-daemon -C <worktree> -c …` with Yulius's MCP as the `yulius mcp` stdio
   bridge; a sandbox MCP server's renamed variables pass through a `sh` wrapper, since Codex hands a
   server only variables of their own names. Codex names its own session: Yulius takes it from the
