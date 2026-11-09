@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-09
 
+- Codex accounts take an imported sign-in, and Codex tasks get their CLI from Yulius (SPEC-446,
+  ADR-0289, fork task #4). The owner signs in on his laptop with a separate Codex home
+  (`CODEX_HOME=~/codex-yulius codex login`) and pastes or picks that `auth.json` under Add
+  subscription → Codex → Import auth.json, or on a Codex subscription's card to sign it in again;
+  only a full ChatGPT sign-in is taken, never shown or logged, and its refreshed tokens come back
+  from runs as a device sign-in's do. A Codex task no longer fails with `codex: not found` in a
+  sandbox without Codex: Yulius downloads the pinned Codex CLI 0.167.0 from npm once (its sha512
+  in the source), keeps it in `<data>/codex-cli` and starts it by its path in every Codex run
+  and sign-in.
 - Codex runs as a second harness in this fork (SPEC-445, ADR-0288, fork task #3; upstream
   removed it on 2026-10-08). A task or automation can run Codex CLI 0.167 instead of Claude Code:
   the native Codex TUI in the task terminal, on Codex accounts added from Subscriptions (ChatGPT

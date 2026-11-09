@@ -8,7 +8,9 @@ Yulius develops itself with Yulius.
 This fork (`studenciak00owl/yulius`) also runs native Codex CLI sessions on Codex (OpenAI)
 accounts, chosen per task or automation; a task keeps its agent for life
 ([SPEC-445](../.ai/specs/SPEC-445-fork-codex-harness.md), reversing upstream's `F 2026-10-08` for
-this fork only).
+this fork only). A Codex account signs in by device code, by an imported `auth.json` of a
+`codex login` made elsewhere, or with an OpenAI API key, and Yulius provides the pinned Codex CLI
+to every Codex run ([SPEC-446](../.ai/specs/SPEC-446-codex-import-auth-json-codex-cli-in-sand.md)).
 
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.

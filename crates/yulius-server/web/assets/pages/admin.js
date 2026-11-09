@@ -189,7 +189,7 @@ function authJsonInput() {
     h('span', { class: 'field-label', 'aria-hidden': 'true' }, 'auth.json'),
     text,
     h('div', { class: 'row-wrap' }, picker, chosen),
-    h('span', { class: 'field-hint' }, 'Sign in with a separate Codex home (CODEX_HOME=~/codex-yulius codex login) so your laptop and Yulius never share one refresh token.'));
+    h('span', { class: 'field-hint' }, `Sign in with a separate Codex home (CODEX_HOME=~/codex-yulius codex login) so your laptop and ${BRAND.name} never share one refresh token.`));
   return {
     node,
     text,
@@ -492,7 +492,7 @@ export function mountAccountsPage(ctx, route) {
         : method === 'device'
           ? 'Next, a terminal opens with Codex’s own sign-in (codex login --device-auth): open the link it shows and enter its one-time code. Codex tasks waiting for capacity continue on it as soon as it is signed in.'
           : method === 'import'
-            ? 'The file is the subscription’s credential at once; Codex tasks can use it right away, and Yulius keeps the tokens Codex refreshes.'
+            ? `The file is the subscription’s credential at once; Codex tasks can use it right away, and ${BRAND.name} keeps the tokens Codex refreshes.`
             : 'The key is the subscription’s credential at once; Codex tasks can use it right away.';
       if (modal) {
         modal.setActions(actions());

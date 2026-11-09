@@ -60,6 +60,8 @@ refreshes during a run. A task never changes harness.
 | CDX-007 | Codex hooks reach Yulius as Claude Code's do (`yulius hook codex <event>`): SessionStart (briefing, session id), UserPromptSubmit, Stop (turn boundary, gate, holds) and PreToolUse; a hook of another harness than the run's is refused. | `tests/agent_hooks.rs` |
 | CDX-008 | A Codex account's usage windows come from `chatgpt.com/backend-api/wham/usage` (read-only) and from the rate limits in its runs' rollouts; an API-key account has no windows. | `wiring/usage.rs` tests |
 | CDX-009 | Rotation picks only accounts of the task's provider; a Codex task at its limit moves to another Codex account by native resume, and waits when none has capacity. A task never switches harness. | `yulius-domain` rotation tests; `tests/codex.rs` |
+| CDX-011 | A Codex account takes an imported `auth.json` of a ChatGPT sign-in made elsewhere (`codex login` with a separate `CODEX_HOME`): at creation (`auth_json`) or for an existing account (`POST /api/admin/accounts/{id}/import`); only a full ChatGPT sign-in, sealed, never returned or logged; its refreshes are written back (CDX-006). Detailed in [SPEC-446](SPEC-446-codex-import-auth-json-codex-cli-in-sand.md) IMP-001..004. | `tests/accounts.rs`; `tests/codex.rs`; `e2e/tests/codex.e2e.ts` |
+| CDX-012 | Codex runs and sign-ins start the pinned Codex CLI Yulius installs from npm into `<data>/codex-cli` (sha512 pinned in the source), never a `codex` the sandbox may lack (ADR-0289; SPEC-446 CLI-001, CLI-002). | `tests/codex_cli.rs`; `tests/codex.rs` |
 | CDX-010 | The UI offers Codex: the composer's model menu has an OpenAI group (its choice sends `harness: codex`), automations show and take a harness, the Accounts page adds a Codex account (device sign-in or API key), and the mock serves the same. | e2e and mock checks |
 
 ## Plan
@@ -74,6 +76,7 @@ refreshes during a run. A task never changes harness.
 - [x] UI offers Codex in the composer, automations and Accounts
 - [x] Fork spec, ADR and documents describe the second harness
 - [x] Independent review answered and branch pushed
+- [x] Codex accounts take an imported auth.json and runs get the provided Codex CLI (SPEC-446)
 
 ## Acceptance criteria
 

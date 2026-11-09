@@ -67,7 +67,20 @@ flowchart LR
 
 Rotation picks only accounts of the task's provider, so a Codex task moves between Codex accounts
 by `codex resume <id>` and waits when none has capacity. A Codex account signs in with `codex login
---device-auth` in the login terminal or takes an OpenAI API key.
+--device-auth` in the login terminal, takes the `auth.json` of a ChatGPT sign-in made elsewhere
+(imported, SPEC-446), or takes an OpenAI API key.
+
+The Codex CLI is Yulius's own ([ADR-0289](decisions/0289-yulius-provides-the-pinned-codex-cli.md)):
+the pinned release (0.167.0) is downloaded from npm once, checked against the sha512 in the
+source and unpacked into `<data>/codex-cli/<version>-<platform>`. Runs and sign-ins start its
+`bin/codex` by absolute path, and a contained run binds that directory read-only.
+
+```mermaid
+flowchart LR
+  NPM["registry.npmjs.org: @openai/codex@0.167.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.167.0-linux-x64 (bin/codex, codex-path/rg)"]
+  CLI -->|"absolute path, read-only bind"| RUN["Codex run in its sandbox"]
+  CLI -->|"absolute path"| LOGIN["codex login --device-auth"]
+```
 
 ## Layers and crates
 
